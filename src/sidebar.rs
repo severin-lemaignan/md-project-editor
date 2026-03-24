@@ -3,6 +3,9 @@ use libadwaita as adw;
 use gtk4::{gio, Box as GtkBox, Label, ListView, ScrolledWindow, SignalListItemFactory, SingleSelection, DirectoryList};
 use adw::ApplicationWindow;
 use sourceview5::Buffer;
+use std::rc::Rc;
+use std::cell::RefCell;
+use std::path::PathBuf;
 
 pub struct Sidebar {
     pub container: GtkBox,
@@ -10,7 +13,7 @@ pub struct Sidebar {
 }
 
 impl Sidebar {
-    pub fn new(window: &ApplicationWindow, buffer: &Buffer) -> Self {
+    pub fn new(window: &ApplicationWindow, buffer: &Buffer, current_file: Rc<RefCell<Option<PathBuf>>>) -> Self {
         let container = GtkBox::new(gtk4::Orientation::Vertical, 0);
         let current_dir = gio::File::for_path(".");
         
@@ -50,10 +53,12 @@ impl Sidebar {
         // We'll wrap in a SingleSelection
         let sel = SingleSelection::new(Some(list_model.clone()));
         let list_view = ListView::new(Some(sel), Some(factory));
+        list_view.set_single_click_activate(true);
         
         let win_clone = window.clone();
         let buf_clone = buffer.clone();
         let dl_clone = list_model.clone();
+        let current_file_clone = current_file.clone();
         list_view.connect_activate(move |_lv, position| {
             if let Some(obj) = dl_clone.item(position) {
                 if let Ok(info) = obj.downcast::<gio::FileInfo>() {
@@ -62,6 +67,12 @@ impl Sidebar {
                         if let Some(root) = dl_clone.file() {
                             let child_file = root.child(info.name());
                             if let Some(path) = child_file.path() {
+                                // Auto-save existing file first
+                                if let Some(current_path) = current_file_clone.borrow().as_deref() {
+                                    crate::file_ops::save_to_path(&buf_clone, current_path);
+                                }
+                                
+                                *current_file_clone.borrow_mut() = Some(path.clone());
                                 crate::file_ops::open_path(&win_clone, &buf_clone, &path);
                             }
                         }

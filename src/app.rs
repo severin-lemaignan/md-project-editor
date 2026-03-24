@@ -5,6 +5,9 @@ use adw::{Application, ApplicationWindow, OverlaySplitView, ToolbarView, HeaderB
 use gtk4::{Paned, Orientation, Button, MenuButton, Popover, Switch, Box as GtkBox, Label, Align};
 use webkit6::prelude::*;
 use webkit6::WebView;
+use std::rc::Rc;
+use std::cell::RefCell;
+use std::path::PathBuf;
 
 use crate::editor::Editor;
 use crate::preview;
@@ -23,7 +26,6 @@ pub fn build_ui(app: &Application) {
     // Create the window first so we can pass it to other components
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("Agentic MD")
         .default_width(1200)
         .default_height(800)
         .build();
@@ -47,8 +49,40 @@ pub fn build_ui(app: &Application) {
         .build();
     paned.set_position(600);
 
+    let current_file: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+
+    // --- Auto-Save on Type setup ---
+    let debouncer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let current_file_deb = current_file.clone();
+    
+    // --- Title Updater ---
+    let title_win = window.clone();
+    let title_file = current_file.clone();
+    editor.buffer.connect_modified_changed(move |b| {
+        let buf = b.downcast_ref::<sourceview5::Buffer>().unwrap();
+        crate::file_ops::update_window_title(&title_win, buf, title_file.borrow().as_deref());
+    });
+
+    let debouncer_for_closure = debouncer.clone();
+    editor.buffer.connect_changed(move |b| {
+        if let Some(source_id) = debouncer_for_closure.borrow_mut().take() {
+            source_id.remove();
+        }
+        let path_clone = current_file_deb.clone();
+        let b_clone = b.clone();
+        let debouncer_inside = debouncer_for_closure.clone();
+        let source_id = glib::timeout_add_local(std::time::Duration::from_millis(1500), move || {
+            if let Some(path) = &*path_clone.borrow() {
+                crate::file_ops::save_to_path(&b_clone, path);
+            }
+            *debouncer_inside.borrow_mut() = None;
+            glib::ControlFlow::Break
+        });
+        *debouncer_for_closure.borrow_mut() = Some(source_id);
+    });
+
     // --- Sidebar ---
-    let sidebar = Sidebar::new(&window, &editor.buffer);
+    let sidebar = Sidebar::new(&window, &editor.buffer, current_file.clone());
     
     let sidebar_header = HeaderBar::new();
     let sidebar_toolbar = ToolbarView::new();
@@ -66,8 +100,12 @@ pub fn build_ui(app: &Application) {
     let btn_open = Button::from_icon_name("document-open-symbolic");
     let win_clone1 = window.clone();
     let buf_clone1 = editor.buffer.clone();
+    let current_file_clone1 = current_file.clone();
     btn_open.connect_clicked(move |_| {
-        file_ops::open_file(&win_clone1, &buf_clone1);
+        if let Some(path) = &*current_file_clone1.borrow() {
+            crate::file_ops::save_to_path(&buf_clone1, path);
+        }
+        file_ops::open_file(&win_clone1, &buf_clone1, current_file_clone1.clone());
     });
     content_header.pack_start(&btn_open);
 
@@ -75,8 +113,13 @@ pub fn build_ui(app: &Application) {
     let btn_save = Button::from_icon_name("document-save-symbolic");
     let win_clone2 = window.clone();
     let buf_clone2 = editor.buffer.clone();
+    let current_file_clone2 = current_file.clone();
     btn_save.connect_clicked(move |_| {
-        file_ops::save_file(&win_clone2, &buf_clone2);
+        if let Some(path) = &*current_file_clone2.borrow() {
+            crate::file_ops::save_to_path(&buf_clone2, path);
+        } else {
+            file_ops::save_file(&win_clone2, &buf_clone2, current_file_clone2.clone());
+        }
     });
     content_header.pack_start(&btn_save);
 
@@ -166,6 +209,9 @@ pub fn build_ui(app: &Application) {
 
     // Set up synchronized scrolling
     sync_scroll::setup_sync_scroll(&editor.scrolled_window, &webview);
+
+    // Initial Title update
+    crate::file_ops::update_window_title(&window, &editor.buffer, current_file.borrow().as_deref());
 
     window.present();
 }
