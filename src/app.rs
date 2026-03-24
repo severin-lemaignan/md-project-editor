@@ -13,7 +13,6 @@ use std::path::PathBuf;
 use crate::editor::Editor;
 use crate::preview;
 use crate::sync_scroll;
-use crate::file_ops;
 use crate::sidebar::Sidebar;
 
 /// Build the main application UI.
@@ -332,7 +331,7 @@ pub fn build_ui(app: &Application) {
     );
 
     // Set up live preview
-    preview::setup_live_preview(&editor.buffer, &webview);
+    preview::setup_live_preview(&editor.buffer, &webview, current_file.clone());
 
     // Set up synchronized scrolling
     sync_scroll::setup_sync_scroll(&editor.scrolled_window, &webview);
