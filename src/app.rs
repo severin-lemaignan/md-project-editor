@@ -97,7 +97,12 @@ pub fn build_ui(app: &Application) {
     let sidebar = Sidebar::new(&window, &editor.buffer, current_file.clone());
     
     let sidebar_header = HeaderBar::new();
+    let empty_title = adw::WindowTitle::new("", "");
+    sidebar_header.set_title_widget(Some(&empty_title));
+    
+    // open folder button
     let btn_open_folder = Button::from_icon_name("folder-open-symbolic");
+    btn_open_folder.set_tooltip_text(Some("Open Folder"));
     let win_folder_clone = window.clone();
     let dir_list_clone = sidebar.dir_list.clone();
     btn_open_folder.connect_clicked(move |_| {
@@ -117,6 +122,64 @@ pub fn build_ui(app: &Application) {
     });
     sidebar_header.pack_start(&btn_open_folder);
 
+    // New File Button
+    let btn_new_file = MenuButton::new();
+    btn_new_file.set_icon_name("list-add-symbolic");
+    btn_new_file.set_tooltip_text(Some("New File"));
+    let popover_new = Popover::new();
+    let popover_new_box = GtkBox::new(Orientation::Horizontal, 6);
+    popover_new_box.set_margin_start(6);
+    popover_new_box.set_margin_end(6);
+    popover_new_box.set_margin_top(6);
+    popover_new_box.set_margin_bottom(6);
+    
+    let new_entry = gtk4::Entry::builder().placeholder_text("filename.md").build();
+    let btn_create = Button::builder().label("Create").build();
+    popover_new_box.append(&new_entry);
+    popover_new_box.append(&btn_create);
+    popover_new.set_child(Some(&popover_new_box));
+    btn_new_file.set_popover(Some(&popover_new));
+
+    let new_entry_clone = new_entry.clone();
+    let popover_new_clone = popover_new.clone();
+    let win_new_clone = window.clone();
+    let buf_new_clone = editor.buffer.clone();
+    let current_file_new_clone = current_file.clone();
+    let create_action = Rc::new(move || {
+        let filename = new_entry_clone.text().to_string();
+        if filename.is_empty() { return; }
+        
+        let s = gio::Settings::new("com.agentic.md");
+        let folder_str = s.string("last-folder");
+        let root = if folder_str.is_empty() { PathBuf::from(".") } else { PathBuf::from(folder_str.as_str()) };
+        let file_path = root.join(filename);
+        
+        if !file_path.exists() {
+            if let Err(e) = std::fs::write(&file_path, "") {
+                eprintln!("Failed to create file: {}", e);
+                return;
+            }
+        }
+        
+        if let Some(current_path) = current_file_new_clone.borrow().as_deref() {
+            crate::file_ops::save_to_path(&buf_new_clone, current_path);
+        }
+        
+        let _ = gio::Settings::new("com.agentic.md").set_string("last-file", &file_path.to_string_lossy());
+        *current_file_new_clone.borrow_mut() = Some(file_path.clone());
+        crate::file_ops::open_path(&win_new_clone, &buf_new_clone, &file_path);
+        
+        popover_new_clone.popdown();
+        new_entry_clone.set_text("");
+    });
+
+    let create1 = create_action.clone();
+    btn_create.connect_clicked(move |_| create1());
+    let create2 = create_action.clone();
+    new_entry.connect_activate(move |_| create2());
+
+    sidebar_header.pack_start(&btn_new_file);
+
     let sidebar_toolbar = ToolbarView::new();
     sidebar_toolbar.add_top_bar(&sidebar_header);
     sidebar_toolbar.set_content(Some(&sidebar.container));
@@ -128,32 +191,22 @@ pub fn build_ui(app: &Application) {
     let toggle_sidebar_btn = Button::from_icon_name("sidebar-show-symbolic");
     content_header.pack_start(&toggle_sidebar_btn);
 
-    // Open Button
-    let btn_open = Button::from_icon_name("document-open-symbolic");
-    let win_clone1 = window.clone();
-    let buf_clone1 = editor.buffer.clone();
-    let current_file_clone1 = current_file.clone();
-    btn_open.connect_clicked(move |_| {
-        if let Some(path) = &*current_file_clone1.borrow() {
-            crate::file_ops::save_to_path(&buf_clone1, path);
+    // Ctrl+S shortcut for saving
+    let key_ctrl = gtk4::EventControllerKey::new();
+    key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    let save_file_clone = current_file.clone();
+    let save_buffer_clone = editor.buffer.clone();
+    key_ctrl.connect_key_pressed(move |_, keyval, _keycode, state| {
+        if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK) && 
+           (keyval == gtk4::gdk::Key::s || keyval == gtk4::gdk::Key::S) {
+            if let Some(path) = &*save_file_clone.borrow() {
+                crate::file_ops::save_to_path(&save_buffer_clone, path);
+            }
+            return glib::Propagation::Stop;
         }
-        file_ops::open_file(&win_clone1, &buf_clone1, current_file_clone1.clone());
+        glib::Propagation::Proceed
     });
-    content_header.pack_start(&btn_open);
-
-    // Save Button
-    let btn_save = Button::from_icon_name("document-save-symbolic");
-    let win_clone2 = window.clone();
-    let buf_clone2 = editor.buffer.clone();
-    let current_file_clone2 = current_file.clone();
-    btn_save.connect_clicked(move |_| {
-        if let Some(path) = &*current_file_clone2.borrow() {
-            crate::file_ops::save_to_path(&buf_clone2, path);
-        } else {
-            file_ops::save_file(&win_clone2, &buf_clone2, current_file_clone2.clone());
-        }
-    });
-    content_header.pack_start(&btn_save);
+    window.add_controller(key_ctrl);
 
     // Settings Menu
     let settings_btn = MenuButton::new();
