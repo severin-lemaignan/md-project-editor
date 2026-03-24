@@ -1,0 +1,11 @@
+[package]
+name = "agentic-md"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gtk4 = { version = "0.11", features = ["v4_12"] }
+sourceview5 = { version = "0.11", features = ["gtk_v4_12"] }
+webkit6 = "0.6"
+pulldown-cmark = "0.12"
+glib = "0.22"
