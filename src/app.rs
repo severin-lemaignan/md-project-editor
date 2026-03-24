@@ -287,6 +287,12 @@ pub fn build_ui(app: &Application) {
             padding: 4px 12px;
             border-top: 1px solid #313244;
         }
+        .dim-label {
+            opacity: 0.4;
+        }
+        .destructive-action {
+            color: #f38ba8;
+        }
         "#,
     );
     gtk4::style_context_add_provider_for_display(
