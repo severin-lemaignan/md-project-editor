@@ -75,6 +75,7 @@ struct Register {
 
 #[derive(Debug)]
 pub struct VimState {
+    pub enabled: bool,
     pub mode: VimMode,
     pending_op: Option<PendingOp>,
     pending_key: PendingKey,
@@ -95,6 +96,7 @@ struct LastEdit {
 impl VimState {
     pub fn new() -> Self {
         VimState {
+            enabled: true,
             mode: VimMode::Normal,
             pending_op: None,
             pending_key: PendingKey::None,
@@ -166,6 +168,10 @@ impl VimHandler {
         let label_clone = status_label.clone();
 
         key_ctrl.connect_key_pressed(move |_, key, _keycode, modifiers| {
+            if !state_clone.borrow().enabled {
+                return glib::Propagation::Proceed;
+            }
+
             let result = handle_key(&state_clone, &view_clone, key, modifiers);
             // Update status label
             let st = state_clone.borrow();
@@ -180,7 +186,25 @@ impl VimHandler {
 
     fn update_status(&self) {
         let st = self.state.borrow();
-        self.status_label.set_text(&st.status_text());
+        if st.enabled {
+            self.status_label.set_visible(true);
+            self.status_label.set_text(&st.status_text());
+        } else {
+            self.status_label.set_visible(false);
+        }
+    }
+
+    pub fn set_enabled(&self, view: &View, enabled: bool) {
+        self.state.borrow_mut().enabled = enabled;
+        if enabled {
+            // Reset to normal mode
+            enter_normal(&self.state, view);
+        } else {
+            // Behave like a normal editor
+            view.set_editable(true);
+            view.set_cursor_visible(true);
+        }
+        self.update_status();
     }
 }
 

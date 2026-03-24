@@ -1,11 +1,12 @@
 use gtk4::prelude::*;
-use gtk4::{Application, ApplicationWindow, Paned, Orientation, Settings};
+use gtk4::{Application, ApplicationWindow, Paned, Orientation, Settings, HeaderBar, Button, MenuButton, Popover, Switch, Box as GtkBox, Label, Align};
 use webkit6::prelude::*;
 use webkit6::WebView;
 
 use crate::editor::Editor;
 use crate::preview;
 use crate::sync_scroll;
+use crate::file_ops;
 
 /// Build the main application UI.
 pub fn build_ui(app: &Application) {
@@ -87,6 +88,58 @@ pub fn build_ui(app: &Application) {
         .default_height(800)
         .child(&paned)
         .build();
+
+    // Set up Header Bar
+    let header_bar = HeaderBar::new();
+    
+    // Open Button
+    let btn_open = Button::from_icon_name("document-open-symbolic");
+    let win_clone1 = window.clone();
+    let buf_clone1 = editor.buffer.clone();
+    btn_open.connect_clicked(move |_| {
+        file_ops::open_file(&win_clone1, &buf_clone1);
+    });
+    header_bar.pack_start(&btn_open);
+
+    // Save Button
+    let btn_save = Button::from_icon_name("document-save-symbolic");
+    let win_clone2 = window.clone();
+    let buf_clone2 = editor.buffer.clone();
+    btn_save.connect_clicked(move |_| {
+        file_ops::save_file(&win_clone2, &buf_clone2);
+    });
+    header_bar.pack_start(&btn_save);
+
+    // Settings Menu
+    let settings_btn = MenuButton::new();
+    settings_btn.set_icon_name("open-menu-symbolic");
+    
+    let popover = Popover::new();
+    let popover_box = GtkBox::new(Orientation::Horizontal, 12);
+    popover_box.set_margin_start(12);
+    popover_box.set_margin_end(12);
+    popover_box.set_margin_top(12);
+    popover_box.set_margin_bottom(12);
+    
+    let vim_label = Label::new(Some("Vim Mode"));
+    let vim_switch = Switch::new();
+    vim_switch.set_active(true); // Default enabled
+    vim_switch.set_valign(Align::Center);
+    
+    let editor_view = editor.view.clone();
+    let vim_handler = editor.vim_handler; // Can move since we don't need it elsewhere
+    vim_switch.connect_active_notify(move |switch| {
+        vim_handler.set_enabled(&editor_view, switch.is_active());
+    });
+
+    popover_box.append(&vim_label);
+    popover_box.append(&vim_switch);
+    popover.set_child(Some(&popover_box));
+    settings_btn.set_popover(Some(&popover));
+    
+    header_bar.pack_end(&settings_btn);
+
+    window.set_titlebar(Some(&header_bar));
 
     window.present();
 }

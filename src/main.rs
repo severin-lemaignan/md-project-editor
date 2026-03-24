@@ -1,5 +1,6 @@
 mod app;
 mod editor;
+mod file_ops;
 mod preview;
 mod sync_scroll;
 mod vim;
