@@ -1,9 +1,18 @@
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, Entry, Label, Revealer, RevealerTransitionType, ScrolledWindow, SearchEntry};
+use gtk4::{
+    Box as GtkBox, Button, Entry, GestureClick, Label, Orientation, PolicyType, Revealer,
+    RevealerTransitionType, ScrolledWindow, SearchEntry, Spinner, TextWindowType,
+};
 use sourceview5::prelude::*;
 use sourceview5::{Buffer, LanguageManager, SearchContext, SearchSettings, View};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::mpsc::{Receiver, TryRecvError};
 
+use crate::ai::{
+    request_edit_in_background, EditMode, EditRequest, EditResponse, ProviderAvailability,
+    SharedAiProvider,
+};
 use crate::vim::VimHandler;
 
 pub struct SearchPanel {
@@ -403,6 +412,618 @@ fn replace_text_by_line(text: &str, query: &str, replacement: &str, global: bool
         .collect()
 }
 
+const AI_CONTEXT_CHARS: i32 = 1200;
+
+#[derive(Clone)]
+enum AiPromptMode {
+    InsertAtCursor { offset: i32 },
+    ReplaceSelection {
+        start: i32,
+        end: i32,
+        selected_text: String,
+    },
+}
+
+#[derive(Clone)]
+enum PendingProposal {
+    Insert {
+        offset: i32,
+        text: String,
+    },
+    Replace {
+        start: i32,
+        end: i32,
+        original_text: String,
+        replacement: String,
+    },
+}
+
+struct AiAssistant {
+    prompt_revealer: Revealer,
+    prompt_title: Label,
+    prompt_entry: Entry,
+    prompt_status: Label,
+    prompt_spinner: Spinner,
+    prompt_send: Button,
+    prompt_cancel: Button,
+    review_revealer: Revealer,
+    review_title: Label,
+    review_status: Label,
+    current_label: Label,
+    current_buffer: Buffer,
+    proposal_buffer: Buffer,
+    accept_button: Button,
+    reject_button: Button,
+    prompt_mode: RefCell<Option<AiPromptMode>>,
+    pending_proposal: RefCell<Option<PendingProposal>>,
+    provider: Option<SharedAiProvider>,
+    provider_error: Option<String>,
+    request_generation: Cell<u64>,
+    request_poll: RefCell<Option<glib::SourceId>>,
+    buffer: Buffer,
+    view: View,
+}
+
+impl AiAssistant {
+    fn new(buffer: &Buffer, view: &View, availability: ProviderAvailability) -> Rc<Self> {
+        let prompt_revealer = Revealer::builder()
+            .transition_type(RevealerTransitionType::SlideDown)
+            .reveal_child(false)
+            .build();
+
+        let prompt_box = GtkBox::new(Orientation::Vertical, 6);
+        prompt_box.add_css_class("editor-ai-bar");
+        prompt_box.set_margin_start(12);
+        prompt_box.set_margin_end(12);
+        prompt_box.set_margin_top(12);
+        prompt_box.set_margin_bottom(6);
+
+        let prompt_row = GtkBox::new(Orientation::Horizontal, 6);
+        let prompt_title = Label::new(Some("Ask AI"));
+        prompt_title.add_css_class("heading");
+        let prompt_entry = Entry::new();
+        prompt_entry.set_hexpand(true);
+        prompt_entry.set_placeholder_text(Some("Describe the change you want"));
+        let prompt_spinner = Spinner::new();
+        let prompt_status = Label::new(None);
+        prompt_status.add_css_class("dim-label");
+        prompt_status.set_hexpand(false);
+        let prompt_send = Button::with_label("Send");
+        let prompt_cancel = Button::with_label("Cancel");
+        prompt_cancel.add_css_class("flat");
+
+        prompt_row.append(&prompt_title);
+        prompt_row.append(&prompt_entry);
+        prompt_row.append(&prompt_spinner);
+        prompt_row.append(&prompt_status);
+        prompt_row.append(&prompt_send);
+        prompt_row.append(&prompt_cancel);
+        prompt_box.append(&prompt_row);
+        prompt_revealer.set_child(Some(&prompt_box));
+
+        let review_revealer = Revealer::builder()
+            .transition_type(RevealerTransitionType::SlideDown)
+            .reveal_child(false)
+            .build();
+
+        let review_box = GtkBox::new(Orientation::Vertical, 6);
+        review_box.add_css_class("editor-ai-review");
+        review_box.set_margin_start(12);
+        review_box.set_margin_end(12);
+        review_box.set_margin_top(6);
+        review_box.set_margin_bottom(6);
+
+        let review_header = GtkBox::new(Orientation::Horizontal, 6);
+        let review_title = Label::new(Some("AI Proposal"));
+        review_title.add_css_class("heading");
+        review_title.set_xalign(0.0);
+        review_title.set_hexpand(true);
+        let review_status = Label::new(None);
+        review_status.add_css_class("dim-label");
+        let accept_button = Button::with_label("Accept");
+        let reject_button = Button::with_label("Reject");
+        reject_button.add_css_class("flat");
+        review_header.append(&review_title);
+        review_header.append(&review_status);
+        review_header.append(&accept_button);
+        review_header.append(&reject_button);
+
+        let review_content = GtkBox::new(Orientation::Horizontal, 12);
+        let current_column = GtkBox::new(Orientation::Vertical, 4);
+        let current_label = Label::new(Some("Current"));
+        current_label.add_css_class("dim-label");
+        current_label.set_xalign(0.0);
+        let current_buffer = Buffer::new(None);
+        let current_view = View::with_buffer(&current_buffer);
+        configure_review_view(&current_view);
+        let current_scroll = ScrolledWindow::builder()
+            .hscrollbar_policy(PolicyType::Never)
+            .vscrollbar_policy(PolicyType::Automatic)
+            .min_content_height(140)
+            .child(&current_view)
+            .hexpand(true)
+            .build();
+        current_column.append(&current_label);
+        current_column.append(&current_scroll);
+
+        let proposal_column = GtkBox::new(Orientation::Vertical, 4);
+        let proposal_label = Label::new(Some("Proposal"));
+        proposal_label.add_css_class("dim-label");
+        proposal_label.set_xalign(0.0);
+        let proposal_buffer = Buffer::new(None);
+        let proposal_view = View::with_buffer(&proposal_buffer);
+        configure_review_view(&proposal_view);
+        let proposal_scroll = ScrolledWindow::builder()
+            .hscrollbar_policy(PolicyType::Never)
+            .vscrollbar_policy(PolicyType::Automatic)
+            .min_content_height(140)
+            .child(&proposal_view)
+            .hexpand(true)
+            .build();
+        proposal_column.append(&proposal_label);
+        proposal_column.append(&proposal_scroll);
+
+        review_content.append(&current_column);
+        review_content.append(&proposal_column);
+        review_box.append(&review_header);
+        review_box.append(&review_content);
+        review_revealer.set_child(Some(&review_box));
+
+        let assistant = Rc::new(Self {
+            prompt_revealer,
+            prompt_title,
+            prompt_entry,
+            prompt_status,
+            prompt_spinner,
+            prompt_send,
+            prompt_cancel,
+            review_revealer,
+            review_title,
+            review_status,
+            current_label,
+            current_buffer,
+            proposal_buffer,
+            accept_button,
+            reject_button,
+            prompt_mode: RefCell::new(None),
+            pending_proposal: RefCell::new(None),
+            provider: availability.provider(),
+            provider_error: availability.error_message().map(|msg| msg.to_string()),
+            request_generation: Cell::new(0),
+            request_poll: RefCell::new(None),
+            buffer: buffer.clone(),
+            view: view.clone(),
+        });
+
+        assistant.install_prompt_actions();
+        assistant.install_review_actions();
+        assistant.install_context_menu();
+
+        assistant
+    }
+
+    fn prompt_widget(&self) -> &Revealer {
+        &self.prompt_revealer
+    }
+
+    fn review_widget(&self) -> &Revealer {
+        &self.review_revealer
+    }
+
+    fn install_prompt_actions(self: &Rc<Self>) {
+        {
+            let assistant = self.clone();
+            self.prompt_send.connect_clicked(move |_| assistant.send_request());
+        }
+        {
+            let assistant = self.clone();
+            self.prompt_cancel.connect_clicked(move |_| assistant.close_prompt());
+        }
+        {
+            let assistant = self.clone();
+            self.prompt_entry.connect_activate(move |_| assistant.send_request());
+        }
+    }
+
+    fn install_review_actions(self: &Rc<Self>) {
+        {
+            let assistant = self.clone();
+            self.accept_button.connect_clicked(move |_| assistant.accept_proposal());
+        }
+        {
+            let assistant = self.clone();
+            self.reject_button.connect_clicked(move |_| assistant.reject_proposal());
+        }
+    }
+
+    fn install_context_menu(self: &Rc<Self>) {
+        let popover = gtk4::Popover::new();
+        popover.set_parent(&self.view);
+
+        let menu_box = GtkBox::new(Orientation::Vertical, 0);
+        let ask_button = Button::with_label("Ask AI Here");
+        ask_button.add_css_class("flat");
+        let rewrite_button = Button::with_label("Rewrite Selection");
+        rewrite_button.add_css_class("flat");
+        menu_box.append(&ask_button);
+        menu_box.append(&rewrite_button);
+        popover.set_child(Some(&menu_box));
+        popover.set_has_arrow(true);
+
+        {
+            let assistant = self.clone();
+            let popover = popover.clone();
+            ask_button.connect_clicked(move |_| {
+                popover.popdown();
+                assistant.open_insert_prompt();
+            });
+        }
+        {
+            let assistant = self.clone();
+            let popover = popover.clone();
+            rewrite_button.connect_clicked(move |_| {
+                popover.popdown();
+                assistant.open_replace_prompt();
+            });
+        }
+
+        let gesture = GestureClick::new();
+        gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+        let assistant = self.clone();
+        gesture.connect_pressed(move |_, _, x, y| {
+            assistant.prepare_context_menu(&popover, &rewrite_button, x, y);
+        });
+        self.view.add_controller(gesture);
+    }
+
+    fn prepare_context_menu(
+        &self,
+        popover: &gtk4::Popover,
+        rewrite_button: &Button,
+        x: f64,
+        y: f64,
+    ) {
+        let (buffer_x, buffer_y) =
+            self.view
+                .window_to_buffer_coords(TextWindowType::Widget, x as i32, y as i32);
+
+        if let Some(iter) = self.view.iter_at_location(buffer_x, buffer_y) {
+            let clicked_offset = iter.offset();
+            if let Some((start, end)) = self.buffer.selection_bounds() {
+                let start_offset = start.offset();
+                let end_offset = end.offset();
+                if clicked_offset < start_offset || clicked_offset > end_offset {
+                    self.buffer.place_cursor(&iter);
+                }
+            } else {
+                self.buffer.place_cursor(&iter);
+            }
+        }
+
+        rewrite_button.set_visible(self.has_single_line_or_block_selection());
+        popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
+            x as i32,
+            y as i32,
+            1,
+            1,
+        )));
+        popover.popup();
+    }
+
+    fn has_single_line_or_block_selection(&self) -> bool {
+        self.buffer
+            .selection_bounds()
+            .map(|(start, end)| start.offset() != end.offset())
+            .unwrap_or(false)
+    }
+
+    fn open_insert_prompt(&self) {
+        let offset = self.buffer.iter_at_mark(&self.buffer.get_insert()).offset();
+        self.prompt_mode
+            .borrow_mut()
+            .replace(AiPromptMode::InsertAtCursor { offset });
+        self.prompt_title.set_text("Ask AI Here");
+        self.prompt_status.set_text("");
+        self.prompt_entry.set_text("");
+        self.prompt_entry
+            .set_placeholder_text(Some("Describe what should be inserted at the cursor"));
+        self.prompt_spinner.stop();
+        self.prompt_send.set_sensitive(true);
+        self.prompt_revealer.set_reveal_child(true);
+        self.prompt_entry.grab_focus();
+    }
+
+    fn open_replace_prompt(&self) {
+        let Some((start, end)) = self.buffer.selection_bounds() else {
+            return;
+        };
+        let selected_text = self.buffer.text(&start, &end, false).to_string();
+        if selected_text.is_empty() {
+            return;
+        }
+
+        self.prompt_mode.borrow_mut().replace(AiPromptMode::ReplaceSelection {
+            start: start.offset(),
+            end: end.offset(),
+            selected_text,
+        });
+        self.prompt_title.set_text("Rewrite Selection");
+        self.prompt_status.set_text("");
+        self.prompt_entry.set_text("");
+        self.prompt_entry
+            .set_placeholder_text(Some("Describe how the selection should be changed"));
+        self.prompt_spinner.stop();
+        self.prompt_send.set_sensitive(true);
+        self.prompt_revealer.set_reveal_child(true);
+        self.prompt_entry.grab_focus();
+    }
+
+    fn close_prompt(&self) {
+        self.bump_request_generation();
+        self.prompt_mode.borrow_mut().take();
+        self.prompt_spinner.stop();
+        self.prompt_send.set_sensitive(true);
+        self.prompt_status.set_text("");
+        self.prompt_revealer.set_reveal_child(false);
+        self.view.grab_focus();
+    }
+
+    fn reject_proposal(&self) {
+        self.pending_proposal.borrow_mut().take();
+        self.review_revealer.set_reveal_child(false);
+        self.review_status.set_text("");
+        self.view.grab_focus();
+    }
+
+    fn send_request(self: &Rc<Self>) {
+        let instruction = self.prompt_entry.text().trim().to_string();
+        if instruction.is_empty() {
+            self.prompt_status.set_text("Enter a prompt.");
+            return;
+        }
+
+        let Some(prompt_mode) = self.prompt_mode.borrow().clone() else {
+            self.prompt_status.set_text("No AI action is active.");
+            return;
+        };
+
+        let Some(provider) = self.provider.clone() else {
+            self.prompt_status.set_text(
+                self.provider_error
+                    .as_deref()
+                    .unwrap_or("AI provider is not configured."),
+            );
+            return;
+        };
+
+        let request = self.build_request(&instruction, prompt_mode);
+        let receiver = request_edit_in_background(provider, request);
+        let generation = self.bump_request_generation();
+
+        self.prompt_spinner.start();
+        self.prompt_send.set_sensitive(false);
+        self.prompt_status.set_text("Waiting for AI...");
+
+        self.install_request_poll(receiver, generation);
+    }
+
+    fn build_request(&self, instruction: &str, prompt_mode: AiPromptMode) -> EditRequest {
+        match prompt_mode {
+            AiPromptMode::InsertAtCursor { offset } => {
+                let iter = self.buffer.iter_at_offset(offset);
+                let context_before = excerpt_before(&self.buffer, &iter, AI_CONTEXT_CHARS);
+                let context_after = excerpt_after(&self.buffer, &iter, AI_CONTEXT_CHARS);
+                EditRequest {
+                    instruction: instruction.to_string(),
+                    document_name: None,
+                    mode: EditMode::InsertAtCursor,
+                    selected_text: None,
+                    context_before,
+                    context_after,
+                }
+            }
+            AiPromptMode::ReplaceSelection {
+                start,
+                end,
+                selected_text,
+            } => {
+                let start_iter = self.buffer.iter_at_offset(start);
+                let end_iter = self.buffer.iter_at_offset(end);
+                let context_before = excerpt_before(&self.buffer, &start_iter, AI_CONTEXT_CHARS);
+                let context_after = excerpt_after(&self.buffer, &end_iter, AI_CONTEXT_CHARS);
+                EditRequest {
+                    instruction: instruction.to_string(),
+                    document_name: None,
+                    mode: EditMode::ReplaceSelection,
+                    selected_text: Some(selected_text),
+                    context_before,
+                    context_after,
+                }
+            }
+        }
+    }
+
+    fn install_request_poll(
+        self: &Rc<Self>,
+        receiver: Receiver<Result<EditResponse, String>>,
+        generation: u64,
+    ) {
+        if let Some(source_id) = self.request_poll.borrow_mut().take() {
+            source_id.remove();
+        }
+
+        let assistant = self.clone();
+        let source_id = glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            let keep_polling = match receiver.try_recv() {
+                Ok(result) => {
+                    assistant.handle_request_result(generation, result);
+                    false
+                }
+                Err(TryRecvError::Empty) => true,
+                Err(TryRecvError::Disconnected) => {
+                    assistant.handle_request_result(
+                        generation,
+                        Err("AI request thread disconnected.".to_string()),
+                    );
+                    false
+                }
+            };
+
+            if keep_polling {
+                glib::ControlFlow::Continue
+            } else {
+                assistant.request_poll.borrow_mut().take();
+                glib::ControlFlow::Break
+            }
+        });
+
+        *self.request_poll.borrow_mut() = Some(source_id);
+    }
+
+    fn handle_request_result(&self, generation: u64, result: Result<EditResponse, String>) {
+        if generation != self.request_generation.get() {
+            return;
+        }
+
+        self.prompt_spinner.stop();
+        self.prompt_send.set_sensitive(true);
+
+        match result {
+            Ok(response) => {
+                let Some(prompt_mode) = self.prompt_mode.borrow().clone() else {
+                    self.prompt_status.set_text("AI result arrived without an active action.");
+                    return;
+                };
+                self.prompt_status.set_text("");
+                self.prompt_revealer.set_reveal_child(false);
+                self.show_proposal(prompt_mode, response);
+            }
+            Err(err) => {
+                self.prompt_status.set_text(&err);
+            }
+        }
+    }
+
+    fn show_proposal(&self, prompt_mode: AiPromptMode, response: EditResponse) {
+        match prompt_mode {
+            AiPromptMode::InsertAtCursor { offset } => {
+                self.pending_proposal.borrow_mut().replace(PendingProposal::Insert {
+                    offset,
+                    text: response.text.clone(),
+                });
+                self.current_label.set_text("Context");
+                let iter = self.buffer.iter_at_offset(offset);
+                let before = excerpt_before(&self.buffer, &iter, 300);
+                let after = excerpt_after(&self.buffer, &iter, 300);
+                self.current_buffer.set_text(&format!("{before}|{after}"));
+                self.proposal_buffer.set_text(&response.text);
+                self.review_title.set_text(
+                    response
+                        .summary
+                        .as_deref()
+                        .unwrap_or("AI proposes an insertion at the cursor"),
+                );
+                self.review_status.set_text("Review the proposed insertion.");
+            }
+            AiPromptMode::ReplaceSelection {
+                start,
+                end,
+                selected_text,
+            } => {
+                self.pending_proposal.borrow_mut().replace(PendingProposal::Replace {
+                    start,
+                    end,
+                    original_text: selected_text.clone(),
+                    replacement: response.text.clone(),
+                });
+                self.current_label.set_text("Current");
+                self.current_buffer.set_text(&selected_text);
+                self.proposal_buffer.set_text(&response.text);
+                self.review_title.set_text(
+                    response
+                        .summary
+                        .as_deref()
+                        .unwrap_or("AI proposes a rewrite for the selection"),
+                );
+                self.review_status.set_text("Review the proposed replacement.");
+            }
+        }
+
+        self.review_revealer.set_reveal_child(true);
+    }
+
+    fn accept_proposal(&self) {
+        let Some(proposal) = self.pending_proposal.borrow().clone() else {
+            self.review_status.set_text("No proposal to apply.");
+            return;
+        };
+
+        match proposal {
+            PendingProposal::Insert { offset, text, .. } => {
+                let mut iter = self.buffer.iter_at_offset(offset);
+                self.buffer.begin_user_action();
+                self.buffer.insert(&mut iter, &text);
+                self.buffer.end_user_action();
+            }
+            PendingProposal::Replace {
+                start,
+                end,
+                original_text,
+                replacement,
+                ..
+            } => {
+                let mut start_iter = self.buffer.iter_at_offset(start);
+                let mut end_iter = self.buffer.iter_at_offset(end);
+                let current = self.buffer.text(&start_iter, &end_iter, false).to_string();
+                if current != original_text {
+                    self.review_status
+                        .set_text("The buffer changed since the proposal was generated. Reject and retry.");
+                    return;
+                }
+                self.buffer.begin_user_action();
+                self.buffer.delete(&mut start_iter, &mut end_iter);
+                self.buffer.insert(&mut start_iter, &replacement);
+                self.buffer.end_user_action();
+            }
+        }
+
+        self.pending_proposal.borrow_mut().take();
+        self.review_revealer.set_reveal_child(false);
+        self.review_status.set_text("");
+        self.view.grab_focus();
+    }
+
+    fn bump_request_generation(&self) -> u64 {
+        let next = self.request_generation.get().wrapping_add(1);
+        self.request_generation.set(next);
+        next
+    }
+}
+
+fn configure_review_view(view: &View) {
+    view.set_editable(false);
+    view.set_cursor_visible(false);
+    view.set_wrap_mode(gtk4::WrapMode::Word);
+    view.set_monospace(true);
+    view.set_show_line_numbers(false);
+    view.set_top_margin(8);
+    view.set_bottom_margin(8);
+    view.set_left_margin(8);
+    view.set_right_margin(8);
+}
+
+fn excerpt_before(buffer: &Buffer, iter: &gtk4::TextIter, max_chars: i32) -> String {
+    let mut start = iter.clone();
+    start.backward_chars(max_chars);
+    buffer.text(&start, iter, false).to_string()
+}
+
+fn excerpt_after(buffer: &Buffer, iter: &gtk4::TextIter, max_chars: i32) -> String {
+    let mut end = iter.clone();
+    end.forward_chars(max_chars);
+    buffer.text(iter, &end, false).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::replace_text_by_line;
@@ -430,10 +1051,11 @@ pub struct Editor {
     pub container: gtk4::Box,
     pub vim_handler: VimHandler,
     pub search: Rc<SearchPanel>,
+    _ai: Rc<AiAssistant>,
 }
 
 impl Editor {
-    pub fn new() -> Self {
+    pub fn new(ai_provider: ProviderAvailability) -> Self {
         // Create a new default GtkSourceView buffer with markdown highlighting
         let buffer = Buffer::new(None);
         buffer.set_enable_undo(true);
@@ -486,9 +1108,12 @@ impl Editor {
         status_label.add_css_class("vim-status");
 
         let search = SearchPanel::new(&buffer, &view);
+        let ai = AiAssistant::new(&buffer, &view, ai_provider);
 
-        // Container: search bar + scrolled editor + status bar
+        // Container: AI review + AI prompt + search bar + scrolled editor + status bar
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        container.append(ai.review_widget());
+        container.append(ai.prompt_widget());
         container.append(search.widget());
         container.append(&scrolled_window);
         container.append(&status_label);
@@ -565,6 +1190,7 @@ fn main() {
             container,
             vim_handler,
             search,
+            _ai: ai,
         }
     }
 }

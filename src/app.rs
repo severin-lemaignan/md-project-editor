@@ -10,6 +10,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+use crate::ai::ProviderAvailability;
 use crate::editor::Editor;
 use crate::preview;
 use crate::sync_scroll;
@@ -31,7 +32,7 @@ pub fn build_ui(app: &Application) {
         .build();
 
     // Create the editor
-    let editor = Editor::new();
+    let editor = Editor::new(ProviderAvailability::from_env());
 
     // Create the WebView for preview
     let webview = WebView::new();
@@ -380,6 +381,13 @@ pub fn build_ui(app: &Application) {
             border-top: 1px solid #313244;
         }
         .editor-search-bar {
+            background-color: #181825;
+            border: 1px solid #313244;
+            border-radius: 10px;
+            padding: 8px;
+        }
+        .editor-ai-bar,
+        .editor-ai-review {
             background-color: #181825;
             border: 1px solid #313244;
             border-radius: 10px;

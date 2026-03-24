@@ -1,3 +1,4 @@
+mod ai;
 mod app;
 mod citation_completion;
 mod editor;
