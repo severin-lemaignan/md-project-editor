@@ -333,6 +333,13 @@ pub fn build_ui(app: &Application) {
     // Set up live preview
     preview::setup_live_preview(&editor.buffer, &webview, current_file.clone());
 
+    // Set up citation completion
+    crate::citation_completion::setup_citation_completion(
+        &editor.view,
+        &editor.buffer,
+        current_file.clone(),
+    );
+
     // Set up synchronized scrolling
     sync_scroll::setup_sync_scroll(&editor.scrolled_window, &webview);
 

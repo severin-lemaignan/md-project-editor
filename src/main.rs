@@ -1,4 +1,5 @@
 mod app;
+mod citation_completion;
 mod editor;
 mod file_ops;
 mod preview;
