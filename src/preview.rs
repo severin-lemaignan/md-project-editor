@@ -23,6 +23,7 @@ enum PreviewMode {
     ReadOnlyPandoc { format: &'static str },
     Svg,
     Image,
+    Pdf,
 }
 
 /// HTML template that wraps the rendered markdown content.
@@ -218,6 +219,7 @@ fn preview_mode(buffer: &sourceview5::Buffer, current_file: Option<&Path>) -> Pr
         match crate::file_ops::document_kind(path) {
             crate::file_ops::DocumentKind::Svg => return PreviewMode::Svg,
             crate::file_ops::DocumentKind::Image => return PreviewMode::Image,
+            crate::file_ops::DocumentKind::Pdf => return PreviewMode::Pdf,
             crate::file_ops::DocumentKind::EditablePandoc { format } => {
                 return PreviewMode::EditablePandoc { format };
             }
@@ -301,6 +303,11 @@ fn render_image(current_file: &Path, webview: &WebView) {
     );
     let html = html_template(&body);
     webview.load_html(&html, base_uri.as_deref());
+}
+
+fn render_pdf(current_file: &Path, webview: &WebView) {
+    let pdf_uri = file_uri_for_path(current_file);
+    webview.load_uri(&pdf_uri);
 }
 
 enum PandocInput {
@@ -445,6 +452,10 @@ impl PreviewController {
                 self.editor_container.set_visible(false);
                 self.webview.set_visible(true);
             }
+            PreviewMode::Pdf => {
+                self.editor_container.set_visible(false);
+                self.webview.set_visible(true);
+            }
             PreviewMode::Hidden => {
                 self.editor_container.set_visible(true);
                 self.webview.set_visible(false);
@@ -526,6 +537,11 @@ impl PreviewController {
             PreviewMode::Image => {
                 if let Some(path) = current_path.as_deref() {
                     render_image(path, &self.webview);
+                }
+            }
+            PreviewMode::Pdf => {
+                if let Some(path) = current_path.as_deref() {
+                    render_pdf(path, &self.webview);
                 }
             }
             PreviewMode::Hidden => {}

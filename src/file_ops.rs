@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 pub enum DocumentKind {
     PlainText,
     Image,
+    Pdf,
     Svg,
     EditablePandoc { format: &'static str },
     ReadOnlyPandoc { format: &'static str },
@@ -27,6 +28,7 @@ fn extension_lower(path: &Path) -> Option<String> {
 fn document_kind_from_extension(ext: Option<&str>) -> DocumentKind {
     match ext {
         Some("svg") => DocumentKind::Svg,
+        Some("pdf") => DocumentKind::Pdf,
         Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "avif" | "ico") => {
             DocumentKind::Image
         }
@@ -68,7 +70,10 @@ pub fn supports_preview(path: &Path) -> bool {
 }
 
 pub fn is_editable_in_buffer(path: &Path) -> bool {
-    !matches!(document_kind(path), DocumentKind::Image | DocumentKind::ReadOnlyPandoc { .. })
+    !matches!(
+        document_kind(path),
+        DocumentKind::Image | DocumentKind::Pdf | DocumentKind::ReadOnlyPandoc { .. }
+    )
 }
 
 fn pandoc_extract_plain(path: &Path, format: &str) -> Result<String, String> {
@@ -148,7 +153,7 @@ pub fn save_to_path(buffer: &Buffer, path: &Path) {
 
 pub fn open_path(window: &ApplicationWindow, buffer: &Buffer, path: &std::path::Path) {
     match document_kind(path) {
-        DocumentKind::Image => {
+        DocumentKind::Image | DocumentKind::Pdf => {
             buffer.set_text("");
             buffer.set_modified(false);
             buffer.set_language(None::<&sourceview5::Language>);
@@ -230,6 +235,7 @@ mod tests {
             document_kind(Path::new("article.docx")),
             DocumentKind::ReadOnlyPandoc { format: "docx" }
         );
+        assert_eq!(document_kind(Path::new("paper.pdf")), DocumentKind::Pdf);
         assert_eq!(document_kind(Path::new("figure.svg")), DocumentKind::Svg);
         assert_eq!(document_kind(Path::new("photo.jpg")), DocumentKind::Image);
         assert_eq!(document_kind(Path::new("scratch.txt")), DocumentKind::PlainText);
@@ -240,6 +246,7 @@ mod tests {
         assert!(is_editable_in_buffer(Path::new("paper.md")));
         assert!(is_editable_in_buffer(Path::new("diagram.svg")));
         assert!(!is_editable_in_buffer(Path::new("article.docx")));
+        assert!(!is_editable_in_buffer(Path::new("paper.pdf")));
         assert!(!is_editable_in_buffer(Path::new("photo.png")));
     }
 }
