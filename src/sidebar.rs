@@ -244,10 +244,14 @@ impl Sidebar {
         list_view.connect_activate(move |_lv, position| {
             if let Some(obj) = dl_clone.item(position) {
                 if let Ok(info) = obj.downcast::<gio::FileInfo>() {
-                    // Only open if it is a regular file
-                    if info.file_type() == gio::FileType::Regular {
-                        if let Some(root) = dl_clone.file() {
-                            let child_file = root.child(info.name());
+                    if let Some(root) = dl_clone.file() {
+                        let child_file = root.child(info.name());
+                        if info.file_type() == gio::FileType::Directory {
+                            dl_clone.set_file(Some(&child_file));
+                            if let Some(path) = child_file.path() {
+                                let _ = gio::Settings::new("com.agentic.md").set_string("last-folder", &path.to_string_lossy());
+                            }
+                        } else if info.file_type() == gio::FileType::Regular {
                             if let Some(path) = child_file.path() {
                                 // Auto-save existing file first
                                 if let Some(current_path) = current_file_clone.borrow().as_deref() {

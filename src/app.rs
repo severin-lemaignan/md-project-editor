@@ -100,6 +100,23 @@ pub fn build_ui(app: &Application) {
     let empty_title = adw::WindowTitle::new("", "");
     sidebar_header.set_title_widget(Some(&empty_title));
     
+    // Up Folder button
+    let btn_up_folder = Button::from_icon_name("go-up-symbolic");
+    btn_up_folder.set_tooltip_text(Some("Up a Directory"));
+    let dl_up = sidebar.dir_list.clone();
+    btn_up_folder.connect_clicked(move |_| {
+        if let Some(file) = dl_up.file() {
+            if let Some(parent) = file.parent() {
+                dl_up.set_file(Some(&parent));
+                if let Some(p) = parent.path() {
+                    let _ = gio::Settings::new("com.agentic.md").set_string("last-folder", &p.to_string_lossy());
+                }
+            }
+        }
+    });
+
+    sidebar_header.pack_start(&btn_up_folder);
+
     // open folder button
     let btn_open_folder = Button::from_icon_name("folder-open-symbolic");
     btn_open_folder.set_tooltip_text(Some("Open Folder"));
