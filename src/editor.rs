@@ -16,10 +16,9 @@ pub struct Editor {
 
 impl Editor {
     pub fn new() -> Self {
-        // Create a GtkSourceView buffer with markdown highlighting
+        // Create a new default GtkSourceView buffer with markdown highlighting
         let buffer = Buffer::new(None);
 
-        // Try to set markdown language for syntax highlighting
         let lang_manager = LanguageManager::default();
         if let Some(lang) = lang_manager.language("markdown") {
             buffer.set_language(Some(&lang));

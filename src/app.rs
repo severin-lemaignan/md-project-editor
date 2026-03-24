@@ -75,6 +75,19 @@ pub fn build_ui(app: &Application) {
         crate::file_ops::update_window_title(&title_win, buf, title_file.borrow().as_deref());
     });
 
+    // --- Preview Toggler ---
+    let webview_clone = webview.clone();
+    editor.buffer.connect_notify_local(Some("language"), move |b, _| {
+        use sourceview5::prelude::*;
+        let buf = b.downcast_ref::<sourceview5::Buffer>().unwrap();
+        if let Some(lang) = buf.language() {
+            let id = lang.id();
+            webview_clone.set_visible(id.as_str() == "markdown");
+        } else {
+            webview_clone.set_visible(false);
+        }
+    });
+
     let debouncer_for_closure = debouncer.clone();
     editor.buffer.connect_changed(move |b| {
         if let Some(source_id) = debouncer_for_closure.borrow_mut().take() {

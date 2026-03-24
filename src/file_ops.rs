@@ -60,12 +60,21 @@ pub fn save_to_path(buffer: &Buffer, path: &Path) {
     }
 }
 
-/// Opens a specific path and updates the buffer
 pub fn open_path(window: &ApplicationWindow, buffer: &Buffer, path: &std::path::Path) {
     match std::fs::read_to_string(path) {
         Ok(content) => {
             buffer.set_text(&content);
             buffer.set_modified(false);
+            
+            // Set syntax highlighting dynamically
+            use sourceview5::prelude::*;
+            let lang_manager = sourceview5::LanguageManager::default();
+            if let Some(lang) = lang_manager.guess_language(Some(path), None) {
+                buffer.set_language(Some(&lang));
+            } else {
+                buffer.set_language(None::<&sourceview5::Language>);
+            }
+            
             update_window_title(window, buffer, Some(path));
         }
         Err(err) => {
