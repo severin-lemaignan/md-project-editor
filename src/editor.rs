@@ -1,23 +1,17 @@
 use gtk4::prelude::*;
-use gtk4::{EventControllerKey, ScrolledWindow};
+use gtk4::ScrolledWindow;
 use sourceview5::prelude::*;
 use sourceview5::{Buffer, LanguageManager, View};
-use std::cell::Cell;
-use std::rc::Rc;
 
-/// Editor modes for future vim-style bindings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditorMode {
-    Normal,
-    Insert,
-}
+use crate::vim::VimHandler;
 
 /// Holds the editor widget and its state.
 pub struct Editor {
     pub scrolled_window: ScrolledWindow,
     pub view: View,
     pub buffer: Buffer,
-    pub mode: Rc<Cell<EditorMode>>,
+    pub container: gtk4::Box,
+    pub vim_handler: VimHandler,
 }
 
 impl Editor {
@@ -59,66 +53,26 @@ impl Editor {
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
             .child(&view)
+            .hexpand(true)
+            .vexpand(true)
             .build();
 
-        // Mode state
-        let mode = Rc::new(Cell::new(EditorMode::Insert));
+        // Status bar for vim mode indicator
+        let status_label = gtk4::Label::new(Some("-- NORMAL --"));
+        status_label.set_halign(gtk4::Align::Start);
+        status_label.set_margin_start(12);
+        status_label.set_margin_end(12);
+        status_label.set_margin_top(4);
+        status_label.set_margin_bottom(4);
+        status_label.add_css_class("vim-status");
 
-        // Install key controller on the view for modal editing
-        let key_ctrl = EventControllerKey::new();
-        let mode_clone = mode.clone();
-        let view_clone = view.clone();
-        key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
-        key_ctrl.connect_key_pressed(move |_, key, _keycode, _modifiers| {
-            let current_mode = mode_clone.get();
-            match current_mode {
-                EditorMode::Normal => {
-                    // In Normal mode, consume most keys
-                    match key {
-                        gtk4::gdk::Key::i => {
-                            // Switch to Insert mode
-                            mode_clone.set(EditorMode::Insert);
-                            view_clone.set_editable(true);
-                            // Update cursor style
-                            view_clone.set_cursor_visible(true);
-                            glib::Propagation::Stop
-                        }
-                        gtk4::gdk::Key::a => {
-                            // Append: move cursor forward one, enter insert
-                            mode_clone.set(EditorMode::Insert);
-                            view_clone.set_editable(true);
-                            view_clone.set_cursor_visible(true);
-                            // Move cursor forward
-                            let buf = view_clone.buffer();
-                            let mut iter = buf.iter_at_mark(&buf.get_insert());
-                            iter.forward_char();
-                            buf.place_cursor(&iter);
-                            glib::Propagation::Stop
-                        }
-                        _ => {
-                            // Suppress all other key input in Normal mode
-                            glib::Propagation::Stop
-                        }
-                    }
-                }
-                EditorMode::Insert => {
-                    match key {
-                        gtk4::gdk::Key::Escape => {
-                            // Switch to Normal mode
-                            mode_clone.set(EditorMode::Normal);
-                            view_clone.set_editable(false);
-                            view_clone.set_cursor_visible(true);
-                            glib::Propagation::Stop
-                        }
-                        _ => {
-                            // Normal typing in Insert mode
-                            glib::Propagation::Proceed
-                        }
-                    }
-                }
-            }
-        });
-        view.add_controller(key_ctrl);
+        // Container: scrolled editor + status bar
+        let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        container.append(&scrolled_window);
+        container.append(&status_label);
+
+        // Install vim handler
+        let vim_handler = VimHandler::new(&view, status_label);
 
         // Seed buffer with example content
         buffer.set_text(
@@ -126,16 +80,28 @@ impl Editor {
 
 A **fast**, *sleek* markdown editor with agentic capabilities.
 
+## Vim Bindings
+
+This editor supports vim keybindings! Try these:
+
+- `h` `j` `k` `l` — move cursor
+- `w` / `b` / `e` — word motions
+- `0` / `$` / `^` — line motions
+- `gg` / `G` — jump to start/end of file
+- `i` / `a` / `o` / `O` — enter Insert mode
+- `Esc` — back to Normal mode
+- `dd` / `yy` / `p` — delete/yank/paste lines
+- `dw` / `cw` — delete/change word
+- `v` / `V` — visual mode
+- `u` — undo
+- `:q` — quit
+
 ## Features
 
 - ✏️ Live preview as you type
 - 🔄 Synchronized scrolling
-- 🎯 Modal editing (press `Esc` for Normal mode, `i` for Insert)
+- 🎯 Full vim keybindings
 - 🌙 Dark theme
-
-## Getting Started
-
-Start typing markdown here and see it rendered on the right!
 
 ```rust
 fn main() {
@@ -162,7 +128,7 @@ fn main() {
 | Editor  | ✅     |
 | Preview | ✅     |
 | Scroll sync | ✅ |
-| Vim mode | 🔜    |
+| Vim mode | ✅    |
 
 ---
 
@@ -174,7 +140,8 @@ fn main() {
             scrolled_window,
             view,
             buffer,
-            mode,
+            container,
+            vim_handler,
         }
     }
 }

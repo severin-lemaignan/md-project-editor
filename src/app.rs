@@ -33,7 +33,7 @@ pub fn build_ui(app: &Application) {
     let paned = Paned::builder()
         .orientation(Orientation::Horizontal)
         .wide_handle(true)
-        .start_child(&editor.scrolled_window)
+        .start_child(&editor.container)
         .end_child(&webview)
         .build();
 
@@ -56,6 +56,14 @@ pub fn build_ui(app: &Application) {
         }
         .editor-view {
             font-size: 14px;
+        }
+        .vim-status {
+            font-family: monospace;
+            font-size: 12px;
+            color: #a6adc8;
+            background-color: #181825;
+            padding: 4px 12px;
+            border-top: 1px solid #313244;
         }
         "#,
     );

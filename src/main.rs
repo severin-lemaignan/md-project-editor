@@ -2,6 +2,7 @@ mod app;
 mod editor;
 mod preview;
 mod sync_scroll;
+mod vim;
 
 use gtk4::prelude::*;
 use gtk4::Application;
