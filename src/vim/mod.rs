@@ -8,6 +8,7 @@ use sourceview5::View;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::editor::SearchPanel;
 use commands::CommandResult;
 use motions::MotionRange;
 
@@ -20,6 +21,8 @@ pub enum VimMode {
     Visual,
     VisualLine,
     Command,
+    SearchForward,
+    SearchBackward,
 }
 
 impl VimMode {
@@ -30,6 +33,8 @@ impl VimMode {
             VimMode::Visual => "VISUAL",
             VimMode::VisualLine => "V-LINE",
             VimMode::Command => "COMMAND",
+            VimMode::SearchForward => "SEARCH",
+            VimMode::SearchBackward => "SEARCH",
         }
     }
 }
@@ -82,6 +87,8 @@ pub struct VimState {
     count_buf: String,
     register: Option<Register>,
     command_buf: String,
+    last_search: Option<String>,
+    last_search_forward: bool,
     /// Visual mode anchor point
     visual_anchor: Option<gtk4::TextMark>,
     /// For repeat (.)
@@ -103,6 +110,8 @@ impl VimState {
             count_buf: String::new(),
             register: None,
             command_buf: String::new(),
+            last_search: None,
+            last_search_forward: true,
             visual_anchor: None,
             last_edit: None,
         }
@@ -123,6 +132,8 @@ impl VimState {
     pub fn status_text(&self) -> String {
         match self.mode {
             VimMode::Command => format!(":{}", self.command_buf),
+            VimMode::SearchForward => format!("/{}", self.command_buf),
+            VimMode::SearchBackward => format!("?{}", self.command_buf),
             _ => {
                 let mut s = format!("-- {} --", self.mode.display_name());
                 if let Some(op) = &self.pending_op {
@@ -145,7 +156,7 @@ pub struct VimHandler {
 }
 
 impl VimHandler {
-    pub fn new(view: &View, status_label: gtk4::Label) -> Self {
+    pub fn new(view: &View, status_label: gtk4::Label, search: Rc<SearchPanel>) -> Self {
         let state = Rc::new(RefCell::new(VimState::new()));
 
         // Start in Normal mode — disable editing
@@ -166,13 +177,14 @@ impl VimHandler {
         let state_clone = state.clone();
         let view_clone = view.clone();
         let label_clone = status_label.clone();
+        let search_clone = search.clone();
 
         key_ctrl.connect_key_pressed(move |_, key, _keycode, modifiers| {
             if !state_clone.borrow().enabled {
                 return glib::Propagation::Proceed;
             }
 
-            let result = handle_key(&state_clone, &view_clone, key, modifiers);
+            let result = handle_key(&state_clone, &view_clone, &search_clone, key, modifiers);
             // Update status label
             let st = state_clone.borrow();
             label_clone.set_text(&st.status_text());
@@ -213,15 +225,17 @@ impl VimHandler {
 fn handle_key(
     state: &Rc<RefCell<VimState>>,
     view: &View,
+    search: &Rc<SearchPanel>,
     key: gdk::Key,
     modifiers: gdk::ModifierType,
 ) -> glib::Propagation {
     let mode = state.borrow().mode;
     match mode {
         VimMode::Insert => handle_insert(state, view, key),
-        VimMode::Normal => handle_normal(state, view, key, modifiers),
+        VimMode::Normal => handle_normal(state, view, search, key, modifiers),
         VimMode::Visual | VimMode::VisualLine => handle_visual(state, view, key, modifiers),
-        VimMode::Command => handle_command(state, view, key),
+        VimMode::Command => handle_command(state, view, search, key),
+        VimMode::SearchForward | VimMode::SearchBackward => handle_search(state, view, search, key),
     }
 }
 
@@ -245,6 +259,7 @@ fn handle_insert(
 fn handle_normal(
     state: &Rc<RefCell<VimState>>,
     view: &View,
+    search: &Rc<SearchPanel>,
     key: gdk::Key,
     modifiers: gdk::ModifierType,
 ) -> glib::Propagation {
@@ -673,6 +688,40 @@ fn handle_normal(
             state.borrow_mut().reset_count();
             return glib::Propagation::Stop;
         }
+        gdk::Key::slash => {
+            state.borrow_mut().mode = VimMode::SearchForward;
+            state.borrow_mut().command_buf.clear();
+            state.borrow_mut().reset_count();
+            return glib::Propagation::Stop;
+        }
+        gdk::Key::question => {
+            state.borrow_mut().mode = VimMode::SearchBackward;
+            state.borrow_mut().command_buf.clear();
+            state.borrow_mut().reset_count();
+            return glib::Propagation::Stop;
+        }
+        gdk::Key::n => {
+            let (query, forward) = {
+                let st = state.borrow();
+                (st.last_search.clone(), st.last_search_forward)
+            };
+            if let Some(query) = query {
+                search.search_from_cursor(&query, forward);
+            }
+            state.borrow_mut().reset_count();
+            return glib::Propagation::Stop;
+        }
+        gdk::Key::N => {
+            let (query, forward) = {
+                let st = state.borrow();
+                (st.last_search.clone(), !st.last_search_forward)
+            };
+            if let Some(query) = query {
+                search.search_from_cursor(&query, forward);
+            }
+            state.borrow_mut().reset_count();
+            return glib::Propagation::Stop;
+        }
 
         // ── Escape: cancel pending ──
         gdk::Key::Escape => {
@@ -870,6 +919,7 @@ fn visual_selection_range(
 fn handle_command(
     state: &Rc<RefCell<VimState>>,
     view: &View,
+    search: &Rc<SearchPanel>,
     key: gdk::Key,
 ) -> glib::Propagation {
     match key {
@@ -898,6 +948,23 @@ fn handle_command(
                         view.scroll_to_iter(&mut buf.iter_at_mark(&buf.get_insert()), 0.1, false, 0.0, 0.5);
                     }
                 }
+                CommandResult::Substitute(command) => {
+                    if command.whole_file {
+                        search.replace_whole_file_query(
+                            &command.pattern,
+                            &command.replacement,
+                            command.global,
+                        );
+                    } else {
+                        search.replace_current_line_query(
+                            &command.pattern,
+                            &command.replacement,
+                            command.global,
+                        );
+                    }
+                    state.borrow_mut().last_search = Some(command.pattern);
+                    state.borrow_mut().last_search_forward = true;
+                }
                 CommandResult::Error(_msg) => {
                     // Could display error in status bar
                 }
@@ -919,9 +986,45 @@ fn handle_command(
     }
 }
 
+fn handle_search(
+    state: &Rc<RefCell<VimState>>,
+    view: &View,
+    search: &Rc<SearchPanel>,
+    key: gdk::Key,
+) -> glib::Propagation {
+    match key {
+        gdk::Key::Escape => {
+            enter_normal(state, view);
+            glib::Propagation::Stop
+        }
+        gdk::Key::Return => {
+            let query = state.borrow().command_buf.clone();
+            if !query.is_empty() {
+                let forward = state.borrow().mode == VimMode::SearchForward;
+                search.search_from_cursor(&query, forward);
+                state.borrow_mut().last_search = Some(query);
+                state.borrow_mut().last_search_forward = forward;
+            }
+            enter_normal(state, view);
+            glib::Propagation::Stop
+        }
+        gdk::Key::BackSpace => {
+            state.borrow_mut().command_buf.pop();
+            glib::Propagation::Stop
+        }
+        _ => {
+            if let Some(c) = key.to_unicode() {
+                state.borrow_mut().command_buf.push(c);
+            }
+            glib::Propagation::Stop
+        }
+    }
+}
+
 // ─── Mode transitions ───────────────────────────────────────────
 
 fn enter_normal(state: &Rc<RefCell<VimState>>, view: &View) {
+    let was_insert = state.borrow().mode == VimMode::Insert;
     state.borrow_mut().mode = VimMode::Normal;
     state.borrow_mut().pending_op = None;
     state.borrow_mut().pending_key = PendingKey::None;
@@ -930,11 +1033,13 @@ fn enter_normal(state: &Rc<RefCell<VimState>>, view: &View) {
     view.set_cursor_visible(true);
 
     // Move cursor back one if we were in insert mode (vim behavior)
-    let buf = view.buffer();
-    let mut iter = buf.iter_at_mark(&buf.get_insert());
-    if !iter.starts_line() {
-        iter.backward_char();
-        buf.place_cursor(&iter);
+    if was_insert {
+        let buf = view.buffer();
+        let mut iter = buf.iter_at_mark(&buf.get_insert());
+        if !iter.starts_line() {
+            iter.backward_char();
+            buf.place_cursor(&iter);
+        }
     }
 }
 

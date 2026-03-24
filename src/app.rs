@@ -231,7 +231,22 @@ pub fn build_ui(app: &Application) {
     key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
     let save_file_clone = current_file.clone();
     let save_buffer_clone = editor.buffer.clone();
+    let search_panel = editor.search.clone();
+    let editor_view_for_keys = editor.view.clone();
+    let vim_state_for_keys = editor.vim_handler.state.clone();
     key_ctrl.connect_key_pressed(move |_, keyval, _keycode, state| {
+        if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
+            && (keyval == gtk4::gdk::Key::f || keyval == gtk4::gdk::Key::F)
+        {
+            search_panel.open_find();
+            return glib::Propagation::Stop;
+        }
+        if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
+            && (keyval == gtk4::gdk::Key::h || keyval == gtk4::gdk::Key::H)
+        {
+            search_panel.open_replace();
+            return glib::Propagation::Stop;
+        }
         if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK) && 
            (keyval == gtk4::gdk::Key::s || keyval == gtk4::gdk::Key::S) {
             if let Some(path) = &*save_file_clone.borrow() {
@@ -239,6 +254,23 @@ pub fn build_ui(app: &Application) {
                     crate::file_ops::save_to_path(&save_buffer_clone, path);
                 }
             }
+            return glib::Propagation::Stop;
+        }
+        if keyval == gtk4::gdk::Key::F3 {
+            if state.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                search_panel.find_previous();
+            } else {
+                search_panel.find_next();
+            }
+            return glib::Propagation::Stop;
+        }
+        if state.is_empty()
+            && keyval == gtk4::gdk::Key::slash
+            && editor_view_for_keys.has_focus()
+            && !editor_view_for_keys.is_editable()
+            && !vim_state_for_keys.borrow().enabled
+        {
+            search_panel.open_find();
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
@@ -323,6 +355,12 @@ pub fn build_ui(app: &Application) {
             background-color: #181825;
             padding: 4px 12px;
             border-top: 1px solid #313244;
+        }
+        .editor-search-bar {
+            background-color: #181825;
+            border: 1px solid #313244;
+            border-radius: 10px;
+            padding: 8px;
         }
         .dim-label {
             opacity: 0.4;
