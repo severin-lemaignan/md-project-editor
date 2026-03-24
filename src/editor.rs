@@ -436,6 +436,8 @@ impl Editor {
     pub fn new() -> Self {
         // Create a new default GtkSourceView buffer with markdown highlighting
         let buffer = Buffer::new(None);
+        buffer.set_enable_undo(true);
+        buffer.set_max_undo_levels(1024);
 
         let lang_manager = LanguageManager::default();
         if let Some(lang) = lang_manager.language("markdown") {

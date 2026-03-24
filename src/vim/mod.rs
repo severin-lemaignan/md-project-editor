@@ -556,8 +556,17 @@ fn handle_normal(
             state.borrow_mut().reset_count();
             return glib::Propagation::Stop;
         }
+        gdk::Key::u => {
+            if buf.can_undo() {
+                buf.undo();
+            }
+            state.borrow_mut().reset_count();
+            return glib::Propagation::Stop;
+        }
         gdk::Key::r if modifiers.contains(gdk::ModifierType::CONTROL_MASK) => {
-            buf.redo();
+            if buf.can_redo() {
+                buf.redo();
+            }
             state.borrow_mut().reset_count();
             return glib::Propagation::Stop;
         }

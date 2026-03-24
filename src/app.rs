@@ -231,6 +231,7 @@ pub fn build_ui(app: &Application) {
     key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
     let save_file_clone = current_file.clone();
     let save_buffer_clone = editor.buffer.clone();
+    let undo_buffer_clone = editor.buffer.clone();
     let search_panel = editor.search.clone();
     let editor_view_for_keys = editor.view.clone();
     let vim_state_for_keys = editor.vim_handler.state.clone();
@@ -245,6 +246,28 @@ pub fn build_ui(app: &Application) {
             && (keyval == gtk4::gdk::Key::h || keyval == gtk4::gdk::Key::H)
         {
             search_panel.open_replace();
+            return glib::Propagation::Stop;
+        }
+        if editor_view_for_keys.has_focus()
+            && state.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
+            && (keyval == gtk4::gdk::Key::z || keyval == gtk4::gdk::Key::Z)
+        {
+            if state.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                if undo_buffer_clone.can_redo() {
+                    undo_buffer_clone.redo();
+                }
+            } else if undo_buffer_clone.can_undo() {
+                undo_buffer_clone.undo();
+            }
+            return glib::Propagation::Stop;
+        }
+        if editor_view_for_keys.has_focus()
+            && state.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
+            && (keyval == gtk4::gdk::Key::y || keyval == gtk4::gdk::Key::Y)
+        {
+            if undo_buffer_clone.can_redo() {
+                undo_buffer_clone.redo();
+            }
             return glib::Propagation::Stop;
         }
         if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK) && 
