@@ -57,8 +57,8 @@ pub fn build_ui(app: &Application) {
     if !last_file.is_empty() {
         let path = std::path::PathBuf::from(last_file.as_str());
         if path.exists() {
+            *current_file.borrow_mut() = Some(path.clone());
             crate::file_ops::open_path(&window, &editor.buffer, &path);
-            *current_file.borrow_mut() = Some(path);
         }
     }
 
@@ -74,19 +74,6 @@ pub fn build_ui(app: &Application) {
         crate::file_ops::update_window_title(&title_win, buf, title_file.borrow().as_deref());
     });
 
-    // --- Preview Toggler ---
-    let webview_clone = webview.clone();
-    editor.buffer.connect_notify_local(Some("language"), move |b, _| {
-        use sourceview5::prelude::*;
-        let buf = b.downcast_ref::<sourceview5::Buffer>().unwrap();
-        if let Some(lang) = buf.language() {
-            let id = lang.id();
-            webview_clone.set_visible(id.as_str() == "markdown");
-        } else {
-            webview_clone.set_visible(false);
-        }
-    });
-
     let debouncer_for_closure = debouncer.clone();
     editor.buffer.connect_changed(move |b| {
         if let Some(source_id) = debouncer_for_closure.borrow_mut().take() {
@@ -97,7 +84,9 @@ pub fn build_ui(app: &Application) {
         let debouncer_inside = debouncer_for_closure.clone();
         let source_id = glib::timeout_add_local(std::time::Duration::from_millis(1500), move || {
             if let Some(path) = &*path_clone.borrow() {
-                crate::file_ops::save_to_path(&b_clone, path);
+                if crate::file_ops::is_editable_in_buffer(path) {
+                    crate::file_ops::save_to_path(&b_clone, path);
+                }
             }
             *debouncer_inside.borrow_mut() = None;
             glib::ControlFlow::Break
@@ -105,8 +94,21 @@ pub fn build_ui(app: &Application) {
         *debouncer_for_closure.borrow_mut() = Some(source_id);
     });
 
+    let refresh_preview = preview::setup_live_preview(
+        &editor.buffer,
+        &webview,
+        &editor.view,
+        &editor.container,
+        current_file.clone(),
+    );
+
     // --- Sidebar ---
-    let sidebar = Sidebar::new(&window, &editor.buffer, current_file.clone());
+    let sidebar = Sidebar::new(
+        &window,
+        &editor.buffer,
+        current_file.clone(),
+        refresh_preview.clone(),
+    );
     
     let sidebar_header = HeaderBar::new();
     let empty_title = adw::WindowTitle::new("", "");
@@ -174,6 +176,7 @@ pub fn build_ui(app: &Application) {
     let win_new_clone = window.clone();
     let buf_new_clone = editor.buffer.clone();
     let current_file_new_clone = current_file.clone();
+    let refresh_preview_new = refresh_preview.clone();
     let create_action = Rc::new(move || {
         let filename = new_entry_clone.text().to_string();
         if filename.is_empty() { return; }
@@ -191,12 +194,15 @@ pub fn build_ui(app: &Application) {
         }
         
         if let Some(current_path) = current_file_new_clone.borrow().as_deref() {
-            crate::file_ops::save_to_path(&buf_new_clone, current_path);
+            if crate::file_ops::is_editable_in_buffer(current_path) {
+                crate::file_ops::save_to_path(&buf_new_clone, current_path);
+            }
         }
         
         let _ = gio::Settings::new("com.agentic.md").set_string("last-file", &file_path.to_string_lossy());
         *current_file_new_clone.borrow_mut() = Some(file_path.clone());
         crate::file_ops::open_path(&win_new_clone, &buf_new_clone, &file_path);
+        refresh_preview_new();
         
         popover_new_clone.popdown();
         new_entry_clone.set_text("");
@@ -229,7 +235,9 @@ pub fn build_ui(app: &Application) {
         if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK) && 
            (keyval == gtk4::gdk::Key::s || keyval == gtk4::gdk::Key::S) {
             if let Some(path) = &*save_file_clone.borrow() {
-                crate::file_ops::save_to_path(&save_buffer_clone, path);
+                if crate::file_ops::is_editable_in_buffer(path) {
+                    crate::file_ops::save_to_path(&save_buffer_clone, path);
+                }
             }
             return glib::Propagation::Stop;
         }
@@ -329,9 +337,6 @@ pub fn build_ui(app: &Application) {
         &css_provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-
-    // Set up live preview
-    preview::setup_live_preview(&editor.buffer, &webview, current_file.clone());
 
     // Set up citation completion
     crate::citation_completion::setup_citation_completion(

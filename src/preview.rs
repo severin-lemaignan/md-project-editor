@@ -1,6 +1,7 @@
 use gtk4::gio;
 use gtk4::prelude::*;
 use pulldown_cmark::{html, Options, Parser};
+use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -8,9 +9,20 @@ use std::rc::Rc;
 use webkit6::prelude::*;
 use webkit6::WebView;
 
+pub type PreviewRefresh = Rc<dyn Fn()>;
+
 struct RenderResult {
     html_body: String,
     base_uri: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreviewMode {
+    Hidden,
+    EditablePandoc { format: &'static str },
+    ReadOnlyPandoc { format: &'static str },
+    Svg,
+    Image,
 }
 
 /// HTML template that wraps the rendered markdown content.
@@ -197,6 +209,36 @@ fn base_uri_for_path(current_file: Option<&Path>) -> Option<String> {
     })
 }
 
+fn file_uri_for_path(path: &Path) -> String {
+    gio::File::for_path(path).uri().to_string()
+}
+
+fn preview_mode(buffer: &sourceview5::Buffer, current_file: Option<&Path>) -> PreviewMode {
+    if let Some(path) = current_file {
+        match crate::file_ops::document_kind(path) {
+            crate::file_ops::DocumentKind::Svg => return PreviewMode::Svg,
+            crate::file_ops::DocumentKind::Image => return PreviewMode::Image,
+            crate::file_ops::DocumentKind::EditablePandoc { format } => {
+                return PreviewMode::EditablePandoc { format };
+            }
+            crate::file_ops::DocumentKind::ReadOnlyPandoc { format } => {
+                return PreviewMode::ReadOnlyPandoc { format };
+            }
+            crate::file_ops::DocumentKind::PlainText => {}
+        }
+    }
+
+    if buffer
+        .language()
+        .map(|lang| lang.id().as_str() == "markdown")
+        .unwrap_or(false)
+    {
+        PreviewMode::EditablePandoc { format: "markdown" }
+    } else {
+        PreviewMode::Hidden
+    }
+}
+
 /// Convert markdown text to HTML using pulldown-cmark as a fallback when Pandoc is unavailable.
 fn fallback_markdown_to_html(markdown: &str) -> String {
     let mut options = Options::empty();
@@ -226,12 +268,49 @@ fn render_error(message: &str) -> String {
     )
 }
 
-fn pandoc_args() -> [&'static str; 5] {
-    ["--from=markdown", "--to=html5", "--citeproc", "--mathml", "--wrap=none"]
+fn pandoc_args(format: &str) -> Vec<String> {
+    vec![
+        format!("--from={format}"),
+        "--to=html5".to_string(),
+        "--citeproc".to_string(),
+        "--mathml".to_string(),
+        "--wrap=none".to_string(),
+    ]
 }
 
-fn render_markdown(
-    markdown: String,
+fn render_svg(svg: String, current_file: Option<&Path>, webview: &WebView) {
+    let base_uri = current_file.map(file_uri_for_path);
+    let bytes = glib::Bytes::from_owned(svg.into_bytes());
+    webview.load_bytes(
+        &bytes,
+        Some("image/svg+xml"),
+        Some("utf-8"),
+        base_uri.as_deref(),
+    );
+}
+
+fn render_image(current_file: &Path, webview: &WebView) {
+    let image_uri = file_uri_for_path(current_file);
+    let base_uri = current_file
+        .parent()
+        .map(file_uri_for_path);
+    let body = format!(
+        r#"<div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;">
+<img src="{image_uri}" alt="Image preview" style="max-width: 100%; max-height: calc(100vh - 48px); object-fit: contain;" />
+</div>"#
+    );
+    let html = html_template(&body);
+    webview.load_html(&html, base_uri.as_deref());
+}
+
+enum PandocInput {
+    Buffer(String),
+    File(PathBuf),
+}
+
+fn render_pandoc(
+    input: PandocInput,
+    format: &'static str,
     current_file: Option<PathBuf>,
     webview: &WebView,
     generation: u64,
@@ -247,9 +326,13 @@ fn render_markdown(
         launcher.set_cwd(workdir);
     }
 
-    let args = pandoc_args();
+    let args = pandoc_args(format);
     let argv: Vec<&OsStr> = std::iter::once(OsStr::new("pandoc"))
-        .chain(args.iter().map(OsStr::new))
+        .chain(args.iter().map(|arg| OsStr::new(arg.as_str())))
+        .chain(match &input {
+            PandocInput::Buffer(_) => None,
+            PandocInput::File(path) => Some(path.as_os_str()),
+        })
         .collect();
 
     let base_uri = base_uri_for_path(current_file.as_deref());
@@ -262,7 +345,10 @@ fn render_markdown(
                     "Pandoc is not available. Install `pandoc` to enable citations and full Pandoc markdown in the preview. Falling back to CommonMark rendering.\n\n{}",
                     err
                 ),
-                &markdown,
+                match &input {
+                    PandocInput::Buffer(text) => text,
+                    PandocInput::File(_) => "",
+                },
             );
             let full_html = html_template(&body);
             webview.load_html(&full_html, base_uri.as_deref());
@@ -277,7 +363,12 @@ fn render_markdown(
     let latest_generation = latest_generation.clone();
     let subprocess_for_callback = subprocess.clone();
 
-    subprocess.communicate_utf8_async(Some(markdown.clone()), gio::Cancellable::NONE, move |result| {
+    let stdin_text = match input {
+        PandocInput::Buffer(text) => Some(text),
+        PandocInput::File(_) => None,
+    };
+
+    subprocess.communicate_utf8_async(stdin_text, gio::Cancellable::NONE, move |result| {
         let is_current = active_process
             .borrow()
             .as_ref()
@@ -321,68 +412,157 @@ fn render_markdown(
     });
 }
 
-/// Set up live preview: when the editor buffer changes, update the WebView.
+struct PreviewController {
+    buffer: sourceview5::Buffer,
+    editor_view: sourceview5::View,
+    webview: WebView,
+    editor_container: gtk4::Box,
+    current_file: Rc<RefCell<Option<PathBuf>>>,
+    pending_update: Rc<RefCell<Option<glib::SourceId>>>,
+    active_process: Rc<RefCell<Option<gio::Subprocess>>>,
+    latest_generation: Rc<Cell<u64>>,
+}
+
+impl PreviewController {
+    fn cancel_pending(&self) {
+        if let Some(source_id) = self.pending_update.borrow_mut().take() {
+            source_id.remove();
+        }
+        if let Some(process) = self.active_process.borrow_mut().take() {
+            process.force_exit();
+        }
+    }
+
+    fn set_visibility(&self, mode: PreviewMode) {
+        match mode {
+            PreviewMode::EditablePandoc { .. }
+            | PreviewMode::ReadOnlyPandoc { .. }
+            | PreviewMode::Svg => {
+                self.editor_container.set_visible(true);
+                self.webview.set_visible(true);
+            }
+            PreviewMode::Image => {
+                self.editor_container.set_visible(false);
+                self.webview.set_visible(true);
+            }
+            PreviewMode::Hidden => {
+                self.editor_container.set_visible(true);
+                self.webview.set_visible(false);
+            }
+        }
+    }
+
+    fn set_editor_editable(&self, current_path: Option<&Path>) {
+        let editable = current_path
+            .map(crate::file_ops::is_editable_in_buffer)
+            .unwrap_or(true);
+        self.editor_view.set_editable(editable);
+    }
+
+    fn refresh(&self) {
+        self.cancel_pending();
+
+        let current_path = self.current_file.borrow().clone();
+        let mode = preview_mode(&self.buffer, current_path.as_deref());
+        self.set_visibility(mode);
+        self.set_editor_editable(current_path.as_deref());
+
+        match mode {
+            PreviewMode::EditablePandoc { format } => {
+                let generation = self.latest_generation.get().wrapping_add(1);
+                self.latest_generation.set(generation);
+
+                let text = self
+                    .buffer
+                    .text(&self.buffer.start_iter(), &self.buffer.end_iter(), false)
+                    .to_string();
+                let webview = self.webview.clone();
+                let active_process = self.active_process.clone();
+                let latest_generation = self.latest_generation.clone();
+                let current_file = self.current_file.clone();
+                let pending_update = self.pending_update.clone();
+                let pending_for_timeout = pending_update.clone();
+
+                let source_id = glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(150),
+                    move || {
+                        let current_path = current_file.borrow().clone();
+                        render_pandoc(
+                            PandocInput::Buffer(text),
+                            format,
+                            current_path,
+                            &webview,
+                            generation,
+                            &active_process,
+                            &latest_generation,
+                        );
+                        *pending_for_timeout.borrow_mut() = None;
+                    },
+                );
+                *self.pending_update.borrow_mut() = Some(source_id);
+            }
+            PreviewMode::ReadOnlyPandoc { format } => {
+                if let Some(path) = current_path.clone() {
+                    let generation = self.latest_generation.get().wrapping_add(1);
+                    self.latest_generation.set(generation);
+                    render_pandoc(
+                        PandocInput::File(path.clone()),
+                        format,
+                        Some(path),
+                        &self.webview,
+                        generation,
+                        &self.active_process,
+                        &self.latest_generation,
+                    );
+                }
+            }
+            PreviewMode::Svg => {
+                let svg = self
+                    .buffer
+                    .text(&self.buffer.start_iter(), &self.buffer.end_iter(), false)
+                    .to_string();
+                render_svg(svg, current_path.as_deref(), &self.webview);
+            }
+            PreviewMode::Image => {
+                if let Some(path) = current_path.as_deref() {
+                    render_image(path, &self.webview);
+                }
+            }
+            PreviewMode::Hidden => {}
+        }
+    }
+}
+
+/// Set up live preview: when the editor buffer changes, update the preview and editor visibility.
 pub fn setup_live_preview(
     buffer: &sourceview5::Buffer,
     webview: &WebView,
+    editor_view: &sourceview5::View,
+    editor_container: &gtk4::Box,
     current_file: Rc<RefCell<Option<PathBuf>>>,
-) {
-    let pending_update: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
-    let active_process: Rc<RefCell<Option<gio::Subprocess>>> = Rc::new(RefCell::new(None));
-    let latest_generation = Rc::new(Cell::new(0_u64));
+) -> PreviewRefresh {
+    let controller = Rc::new(PreviewController {
+        buffer: buffer.clone(),
+        editor_view: editor_view.clone(),
+        webview: webview.clone(),
+        editor_container: editor_container.clone(),
+        current_file,
+        pending_update: Rc::new(RefCell::new(None)),
+        active_process: Rc::new(RefCell::new(None)),
+        latest_generation: Rc::new(Cell::new(0_u64)),
+    });
 
-    let schedule_render = {
-        let webview = webview.clone();
-        let current_file = current_file.clone();
-        let pending_update = pending_update.clone();
-        let active_process = active_process.clone();
-        let latest_generation = latest_generation.clone();
-
-        move |text: String| {
-            if let Some(source_id) = pending_update.borrow_mut().take() {
-                source_id.remove();
-            }
-
-            if let Some(process) = active_process.borrow_mut().take() {
-                process.force_exit();
-            }
-
-            let generation = latest_generation.get().wrapping_add(1);
-            latest_generation.set(generation);
-
-            let webview = webview.clone();
-            let active_process = active_process.clone();
-            let latest_generation = latest_generation.clone();
-            let current_file = current_file.clone();
-            let pending_update = pending_update.clone();
-
-            let pending_for_timeout = pending_update.clone();
-            let source_id =
-                glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
-                    let current_path = current_file.borrow().clone();
-                    render_markdown(
-                        text,
-                        current_path,
-                        &webview,
-                        generation,
-                        &active_process,
-                        &latest_generation,
-                    );
-                    *pending_for_timeout.borrow_mut() = None;
-                });
-            *pending_update.borrow_mut() = Some(source_id);
-        }
+    let refresh: PreviewRefresh = {
+        let controller = controller.clone();
+        Rc::new(move || controller.refresh())
     };
 
-    let initial_text = buffer
-        .text(&buffer.start_iter(), &buffer.end_iter(), false)
-        .to_string();
-    schedule_render(initial_text);
+    refresh();
 
-    buffer.connect_changed(move |buf| {
-        let text = buf
-            .text(&buf.start_iter(), &buf.end_iter(), false)
-            .to_string();
-        schedule_render(text);
+    let refresh_on_change = refresh.clone();
+    buffer.connect_changed(move |_| {
+        refresh_on_change();
     });
+
+    refresh
 }

@@ -37,7 +37,12 @@ pub fn sync_selection(sel: &SingleSelection, dl: &DirectoryList, current_path: O
 }
 
 impl Sidebar {
-    pub fn new(window: &ApplicationWindow, buffer: &Buffer, current_file: Rc<RefCell<Option<PathBuf>>>) -> Self {
+    pub fn new(
+        window: &ApplicationWindow,
+        buffer: &Buffer,
+        current_file: Rc<RefCell<Option<PathBuf>>>,
+        refresh_preview: crate::preview::PreviewRefresh,
+    ) -> Self {
         let container = GtkBox::new(gtk4::Orientation::Vertical, 0);
         let settings = gio::Settings::new("com.agentic.md");
         let folder_str = settings.string("last-folder");
@@ -101,6 +106,7 @@ impl Sidebar {
         let buf_setup = buffer.clone();
         let win_setup = window.clone();
         let current_setup = current_file.clone();
+        let refresh_setup = refresh_preview.clone();
         
         factory.connect_setup(move |_, list_item| {
             let item = list_item.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -157,6 +163,7 @@ impl Sidebar {
             let popover_del = popover.clone();
             let current_del = current_setup.clone();
             let buf_del = buf_setup.clone();
+            let refresh_del = refresh_setup.clone();
             btn_del.connect_clicked(move |_| {
                 if let Some(path) = get_path_del() {
                     let _ = std::fs::remove_file(&path);
@@ -170,6 +177,7 @@ impl Sidebar {
                     if is_current {
                         *current_del.borrow_mut() = None;
                         buf_del.set_text("");
+                        refresh_del();
                     }
                 }
                 popover_del.popdown();
@@ -198,6 +206,7 @@ impl Sidebar {
             let win_ren = win_setup.clone();
             let current_ren = current_setup.clone();
             let buf_ren = buf_setup.clone();
+            let refresh_ren = refresh_setup.clone();
             btn_rename.connect_clicked(move |_| {
                 if let Some(path) = get_path_ren() {
                     let dialog = libadwaita::MessageDialog::builder()
@@ -218,6 +227,7 @@ impl Sidebar {
                     let current_c = current_ren.clone();
                     let buf_c = buf_ren.clone();
                     let win_c = win_ren.clone();
+                    let refresh_c = refresh_ren.clone();
                     dialog.connect_response(Some("rename"), move |d, _| {
                         let new_name = entry.text();
                         let new_path = path_clone.with_file_name(new_name.as_str());
@@ -232,6 +242,7 @@ impl Sidebar {
                             if is_current {
                                 *current_c.borrow_mut() = Some(new_path.clone());
                                 crate::file_ops::update_window_title(&win_c, &buf_c, Some(&new_path));
+                                refresh_c();
                             }
                         }
                         d.close();
@@ -262,8 +273,9 @@ impl Sidebar {
                         img.set_from_gicon(&icon);
                     }
                     
-                    if info.file_type() != gio::FileType::Directory 
-                       && !name.ends_with(".md") && !name.ends_with(".markdown") {
+                    if info.file_type() != gio::FileType::Directory
+                       && !crate::file_ops::supports_preview(std::path::Path::new(&name))
+                       && crate::file_ops::document_kind_for_name(&name) == crate::file_ops::DocumentKind::PlainText {
                         child.add_css_class("dim-label");
                     } else {
                         child.remove_css_class("dim-label");
@@ -345,6 +357,7 @@ impl Sidebar {
         let current_file_clone = current_file.clone();
         let sel_for_activate = sel.clone();
         let search_entry_for_activate = search_entry.clone();
+        let refresh_preview_activate = refresh_preview.clone();
         list_view.connect_activate(move |_lv, position| {
             if let Some(obj) = sel_for_activate.item(position) {
                 if let Ok(info) = obj.downcast::<gio::FileInfo>() {
@@ -366,7 +379,9 @@ impl Sidebar {
                             search_entry_for_activate.set_text("");
                         } else {
                             if let Some(current_path) = current_file_clone.borrow().as_deref() {
-                                crate::file_ops::save_to_path(&buf_clone, current_path);
+                                if crate::file_ops::is_editable_in_buffer(current_path) {
+                                    crate::file_ops::save_to_path(&buf_clone, current_path);
+                                }
                             }
                             
                             // Navigate to the file's folder if opened from search
@@ -381,6 +396,7 @@ impl Sidebar {
                             let _ = gio::Settings::new("com.agentic.md").set_string("last-file", &path.to_string_lossy());
                             *current_file_clone.borrow_mut() = Some(path.clone());
                             crate::file_ops::open_path(&win_clone, &buf_clone, &path);
+                            refresh_preview_activate();
                         }
                     }
                 }
