@@ -10,3 +10,4 @@ webkit6 = "0.6"
 pulldown-cmark = "0.12"
 glib = "0.22"
 libadwaita = { version = "0.9", features = ["v1_4"] }
+walkdir = "2.5.0"
