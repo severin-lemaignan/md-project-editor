@@ -2,11 +2,13 @@ mod app;
 mod editor;
 mod file_ops;
 mod preview;
+mod sidebar;
 mod sync_scroll;
 mod vim;
 
-use gtk4::prelude::*;
-use gtk4::Application;
+use libadwaita as adw;
+use adw::prelude::*;
+use adw::Application;
 
 const APP_ID: &str = "dev.agentic.md";
 

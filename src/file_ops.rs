@@ -1,5 +1,7 @@
 use gtk4::prelude::*;
-use gtk4::{ApplicationWindow, FileDialog, gio};
+use libadwaita as adw;
+use gtk4::{FileDialog, gio};
+use adw::ApplicationWindow;
 use sourceview5::Buffer;
 
 /// Opens a file dialog, reads the selected file, and updates the buffer.
@@ -24,22 +26,27 @@ pub fn open_file(window: &ApplicationWindow, buffer: &Buffer) {
 
     dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
         if let Ok(file) = result {
-            let path = file.path().expect("Expected a valid path");
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    buffer_clone.set_text(&content);
-                    if let Some(filename) = path.file_name() {
-                        let fname = filename.to_string_lossy();
-                        window_clone.set_title(Some(&format!("{} - Agentic MD", fname)));
-                    }
-                    // TODO: Could store the current file path in the app state for future saves
-                }
-                Err(err) => {
-                    eprintln!("Failed to read file: {err}");
-                }
+            if let Some(path) = file.path() {
+                open_path(&window_clone, &buffer_clone, &path);
             }
         }
     });
+}
+
+/// Opens a specific path and updates the buffer
+pub fn open_path(window: &ApplicationWindow, buffer: &Buffer, path: &std::path::Path) {
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            buffer.set_text(&content);
+            if let Some(filename) = path.file_name() {
+                let fname = filename.to_string_lossy();
+                window.set_title(Some(&format!("{} - Agentic MD", fname)));
+            }
+        }
+        Err(err) => {
+            eprintln!("Failed to read file: {err}");
+        }
+    }
 }
 
 /// Opens a save dialog, gets the buffer text, and writes it to the selected file.
