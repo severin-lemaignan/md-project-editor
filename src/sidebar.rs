@@ -15,7 +15,13 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn new(window: &ApplicationWindow, buffer: &Buffer, current_file: Rc<RefCell<Option<PathBuf>>>) -> Self {
         let container = GtkBox::new(gtk4::Orientation::Vertical, 0);
-        let current_dir = gio::File::for_path(".");
+        let settings = gio::Settings::new("com.agentic.md");
+        let folder_str = settings.string("last-folder");
+        let current_dir = if folder_str.is_empty() {
+            gio::File::for_path(".")
+        } else {
+            gio::File::for_path(folder_str.as_str())
+        };
         
         let dir_list = DirectoryList::new(Some("standard::name,standard::icon,standard::type"), Some(&current_dir));
         
@@ -72,6 +78,7 @@ impl Sidebar {
                                     crate::file_ops::save_to_path(&buf_clone, current_path);
                                 }
                                 
+                                let _ = gio::Settings::new("com.agentic.md").set_string("last-file", &path.to_string_lossy());
                                 *current_file_clone.borrow_mut() = Some(path.clone());
                                 crate::file_ops::open_path(&win_clone, &buf_clone, &path);
                             }

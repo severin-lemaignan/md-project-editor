@@ -1,5 +1,6 @@
 use libadwaita as adw;
 use gtk4::prelude::*;
+use gtk4::gio;
 use adw::prelude::*;
 use adw::{Application, ApplicationWindow, OverlaySplitView, ToolbarView, HeaderBar};
 use gtk4::{Paned, Orientation, Button, MenuButton, Popover, Switch, Box as GtkBox, Label, Align};
@@ -50,6 +51,17 @@ pub fn build_ui(app: &Application) {
     paned.set_position(600);
 
     let current_file: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+    let settings = gio::Settings::new("com.agentic.md");
+
+    // Load initial file if it exists
+    let last_file = settings.string("last-file");
+    if !last_file.is_empty() {
+        let path = std::path::PathBuf::from(last_file.as_str());
+        if path.exists() {
+            crate::file_ops::open_path(&window, &editor.buffer, &path);
+            *current_file.borrow_mut() = Some(path);
+        }
+    }
 
     // --- Auto-Save on Type setup ---
     let debouncer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
@@ -85,6 +97,26 @@ pub fn build_ui(app: &Application) {
     let sidebar = Sidebar::new(&window, &editor.buffer, current_file.clone());
     
     let sidebar_header = HeaderBar::new();
+    let btn_open_folder = Button::from_icon_name("folder-open-symbolic");
+    let win_folder_clone = window.clone();
+    let dir_list_clone = sidebar.dir_list.clone();
+    btn_open_folder.connect_clicked(move |_| {
+        let dialog = gtk4::FileDialog::builder()
+            .title("Open Folder")
+            .modal(true)
+            .build();
+        let dl = dir_list_clone.clone();
+        dialog.select_folder(Some(&win_folder_clone), gio::Cancellable::NONE, move |result| {
+            if let Ok(file) = result {
+                if let Some(path) = file.path() {
+                    let _ = gio::Settings::new("com.agentic.md").set_string("last-folder", &path.to_string_lossy());
+                    dl.set_file(Some(&gio::File::for_path(&path)));
+                }
+            }
+        });
+    });
+    sidebar_header.pack_start(&btn_open_folder);
+
     let sidebar_toolbar = ToolbarView::new();
     sidebar_toolbar.add_top_bar(&sidebar_header);
     sidebar_toolbar.set_content(Some(&sidebar.container));
@@ -136,13 +168,19 @@ pub fn build_ui(app: &Application) {
     
     let vim_label = Label::new(Some("Vim Mode"));
     let vim_switch = Switch::new();
-    vim_switch.set_active(true); // Default enabled
+    let is_vim_mode = settings.boolean("vim-mode");
+    vim_switch.set_active(is_vim_mode);
     vim_switch.set_valign(Align::Center);
     
     let editor_view = editor.view.clone();
     let vim_handler = editor.vim_handler;
+    vim_handler.set_enabled(&editor_view, is_vim_mode);
+    
     vim_switch.connect_active_notify(move |switch| {
-        vim_handler.set_enabled(&editor_view, switch.is_active());
+        let active = switch.is_active();
+        vim_handler.set_enabled(&editor_view, active);
+        let s = gio::Settings::new("com.agentic.md");
+        let _ = s.set_boolean("vim-mode", active);
     });
 
     popover_box.append(&vim_label);

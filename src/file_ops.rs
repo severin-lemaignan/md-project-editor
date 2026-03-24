@@ -40,6 +40,7 @@ pub fn open_file(window: &ApplicationWindow, buffer: &Buffer, current_file: Rc<R
     dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
         if let Ok(file) = result {
             if let Some(path) = file.path() {
+                let _ = gio::Settings::new("com.agentic.md").set_string("last-file", &path.to_string_lossy());
                 *current_file.borrow_mut() = Some(path.clone());
                 open_path(&window_clone, &buffer_clone, &path);
             }
@@ -86,6 +87,7 @@ pub fn save_file(window: &ApplicationWindow, buffer: &Buffer, current_file: Rc<R
     dialog.save(Some(window), gio::Cancellable::NONE, move |result| {
         if let Ok(file) = result {
             let path = file.path().expect("Expected a valid path");
+            let _ = gio::Settings::new("com.agentic.md").set_string("last-file", &path.to_string_lossy());
             save_to_path(&buffer_clone, &path);
             *current_file.borrow_mut() = Some(path.clone());
             update_window_title(&window_clone, &buffer_clone, Some(&path));
