@@ -2,8 +2,8 @@ use glib::subclass::types::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
-use sourceview5::{CompletionCell, CompletionColumn, CompletionContext, View};
 use sourceview5::subclass::prelude::*;
+use sourceview5::{CompletionCell, CompletionColumn, CompletionContext, View};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -388,7 +388,9 @@ fn is_citation_key_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.' | '/')
 }
 
-fn citation_query_at_cursor(buffer: &impl IsA<gtk4::TextBuffer>) -> Option<(gtk4::TextIter, String)> {
+fn citation_query_at_cursor(
+    buffer: &impl IsA<gtk4::TextBuffer>,
+) -> Option<(gtk4::TextIter, String)> {
     let buffer = buffer.as_ref();
     let insert = buffer.get_insert();
     let cursor = buffer.iter_at_mark(&insert);
@@ -461,7 +463,7 @@ mod proposal_imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for CitationCompletionProposal {
-        const NAME: &'static str = "AgenticMdCitationCompletionProposal";
+        const NAME: &'static str = "AcademicAssistantCitationCompletionProposal";
         type Type = super::CitationCompletionProposal;
         type ParentType = glib::Object;
         type Interfaces = (sourceview5::CompletionProposal,);
@@ -499,7 +501,7 @@ mod provider_imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for CitationCompletionProvider {
-        const NAME: &'static str = "AgenticMdCitationCompletionProvider";
+        const NAME: &'static str = "AcademicAssistantCitationCompletionProvider";
         type Type = super::CitationCompletionProvider;
         type ParentType = glib::Object;
         type Interfaces = (sourceview5::CompletionProvider,);
@@ -508,8 +510,13 @@ mod provider_imp {
     impl ObjectImpl for CitationCompletionProvider {}
 
     impl CompletionProviderImpl for CitationCompletionProvider {
-        fn activate(&self, context: &CompletionContext, proposal: &sourceview5::CompletionProposal) {
-            let Some(proposal) = proposal.downcast_ref::<super::CitationCompletionProposal>() else {
+        fn activate(
+            &self,
+            context: &CompletionContext,
+            proposal: &sourceview5::CompletionProposal,
+        ) {
+            let Some(proposal) = proposal.downcast_ref::<super::CitationCompletionProposal>()
+            else {
                 return;
             };
             let Some(buffer) = context.buffer() else {
@@ -533,7 +540,8 @@ mod provider_imp {
             proposal: &sourceview5::CompletionProposal,
             cell: &CompletionCell,
         ) {
-            let Some(proposal) = proposal.downcast_ref::<super::CitationCompletionProposal>() else {
+            let Some(proposal) = proposal.downcast_ref::<super::CitationCompletionProposal>()
+            else {
                 return;
             };
 

@@ -50,7 +50,7 @@ pub fn build_ui(app: &Application) {
     paned.set_position(600);
 
     let current_file: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
-    let settings = gio::Settings::new("com.agentic.md");
+    let settings = gio::Settings::new("org.skadge.academicassistant");
 
     // Load initial file if it exists
     let last_file = settings.string("last-file");
@@ -123,7 +123,7 @@ pub fn build_ui(app: &Application) {
             if let Some(parent) = file.parent() {
                 dl_up.set_file(Some(&parent));
                 if let Some(p) = parent.path() {
-                    let _ = gio::Settings::new("com.agentic.md").set_string("last-folder", &p.to_string_lossy());
+                    let _ = gio::Settings::new("org.skadge.academicassistant").set_string("last-folder", &p.to_string_lossy());
                 }
             }
         }
@@ -145,7 +145,7 @@ pub fn build_ui(app: &Application) {
         dialog.select_folder(Some(&win_folder_clone), gio::Cancellable::NONE, move |result| {
             if let Ok(file) = result {
                 if let Some(path) = file.path() {
-                    let _ = gio::Settings::new("com.agentic.md").set_string("last-folder", &path.to_string_lossy());
+                    let _ = gio::Settings::new("org.skadge.academicassistant").set_string("last-folder", &path.to_string_lossy());
                     dl.set_file(Some(&gio::File::for_path(&path)));
                 }
             }
@@ -181,7 +181,7 @@ pub fn build_ui(app: &Application) {
         let filename = new_entry_clone.text().to_string();
         if filename.is_empty() { return; }
         
-        let s = gio::Settings::new("com.agentic.md");
+        let s = gio::Settings::new("org.skadge.academicassistant");
         let folder_str = s.string("last-folder");
         let root = if folder_str.is_empty() { PathBuf::from(".") } else { PathBuf::from(folder_str.as_str()) };
         let file_path = root.join(filename);
@@ -199,7 +199,7 @@ pub fn build_ui(app: &Application) {
             }
         }
         
-        let _ = gio::Settings::new("com.agentic.md").set_string("last-file", &file_path.to_string_lossy());
+        let _ = gio::Settings::new("org.skadge.academicassistant").set_string("last-file", &file_path.to_string_lossy());
         *current_file_new_clone.borrow_mut() = Some(file_path.clone());
         crate::file_ops::open_path(&win_new_clone, &buf_new_clone, &file_path);
         refresh_preview_new();
@@ -324,7 +324,7 @@ pub fn build_ui(app: &Application) {
     vim_switch.connect_active_notify(move |switch| {
         let active = switch.is_active();
         vim_handler.set_enabled(&editor_view, active);
-        let s = gio::Settings::new("com.agentic.md");
+        let s = gio::Settings::new("org.skadge.academicassistant");
         let _ = s.set_boolean("vim-mode", active);
     });
 
