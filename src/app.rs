@@ -234,7 +234,7 @@ pub fn build_ui(app: &Application) {
     let undo_buffer_clone = editor.buffer.clone();
     let search_panel = editor.search.clone();
     let editor_view_for_keys = editor.view.clone();
-    let vim_state_for_keys = editor.vim_handler.state.clone();
+    let vim_enabled_for_keys = editor.vim_handler.enabled.clone();
     key_ctrl.connect_key_pressed(move |_, keyval, _keycode, state| {
         if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
             && (keyval == gtk4::gdk::Key::f || keyval == gtk4::gdk::Key::F)
@@ -291,7 +291,7 @@ pub fn build_ui(app: &Application) {
             && keyval == gtk4::gdk::Key::slash
             && editor_view_for_keys.has_focus()
             && !editor_view_for_keys.is_editable()
-            && !vim_state_for_keys.borrow().enabled
+            && !*vim_enabled_for_keys.borrow()
         {
             search_panel.open_find();
             return glib::Propagation::Stop;
